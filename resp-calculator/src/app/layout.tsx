@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "RESP Calculator - TD Canada Trust",
+  title: "RESP Calculator",
   description: "Calculate your RESP savings and plan for your child's education with TD's RESP calculator.",
 };
 

@@ -191,8 +191,22 @@ export default function RESPCalculator() {
       } else {
         // Future years - normal grant calculation
         if (birthdayThisYear >= feb1ThisYear) {
+          // CESG grant calculation: 20% on first $2,500 contributed per year
+          // BUT only if there are actual new contributions this year
           const annualContribution = monthlyContribution * 12;
-          const yearGrant = Math.min(annualContribution * 0.2, 500);
+          let contributionForGrantCalculation = 0;
+          
+          if (age === nextAge + 1) {
+            // First projection year: include lump sum + regular contributions
+            const totalContributionsThisYear = (lumpSumApplied ? inputs.lumpSumAmount : 0) + newContributionsThisPeriod;
+            contributionForGrantCalculation = Math.min(totalContributionsThisYear, 2500);
+          } else {
+            // Future years: only count if there are actual new contributions this year
+            // If we've hit the $50k limit, newContributionsThisPeriod will be 0, so no grant
+            contributionForGrantCalculation = newContributionsThisPeriod > 0 ? Math.min(newContributionsThisPeriod, 2500) : 0;
+          }
+          
+          const yearGrant = contributionForGrantCalculation * 0.2; // 20% of eligible contribution
           const remainingEligibility = 7200 - cumulativeGrants;
           newGrantsThisYear = Math.min(yearGrant, Math.max(0, remainingEligibility));
         }
