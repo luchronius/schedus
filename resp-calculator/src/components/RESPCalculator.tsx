@@ -27,16 +27,16 @@ interface CalculationResults {
 
 export default function RESPCalculator() {
   const [inputs, setInputs] = useState<CalculatorInputs>({
-    birthDate: '2020-01-01',
-    educationAge: 18,
-    currentSavings: 5000,
-    contributionsAlreadyMade: 5000,
-    grantsAlreadyReceived: 800,
-    grantReceivedThisYear: false,
-    contributionAmount: 2000,
-    contributionFrequency: 'annual',
-    lumpSumAmount: 14000,
-    expectedReturn: 5.0,
+    birthDate: process.env.NEXT_PUBLIC_DEFAULT_BIRTH_DATE || '2020-01-01',
+    educationAge: Number(process.env.NEXT_PUBLIC_DEFAULT_EDUCATION_AGE) || 18,
+    currentSavings: Number(process.env.NEXT_PUBLIC_DEFAULT_CURRENT_SAVINGS) || 5000,
+    contributionsAlreadyMade: Number(process.env.NEXT_PUBLIC_DEFAULT_CONTRIBUTIONS_ALREADY_MADE) || 5000,
+    grantsAlreadyReceived: Number(process.env.NEXT_PUBLIC_DEFAULT_GRANTS_ALREADY_RECEIVED) || 800,
+    grantReceivedThisYear: process.env.NEXT_PUBLIC_DEFAULT_GRANT_RECEIVED_THIS_YEAR === 'true' || false,
+    contributionAmount: Number(process.env.NEXT_PUBLIC_DEFAULT_CONTRIBUTION_AMOUNT) || 2000,
+    contributionFrequency: (process.env.NEXT_PUBLIC_DEFAULT_CONTRIBUTION_FREQUENCY as 'monthly' | 'annual') || 'annual',
+    lumpSumAmount: Number(process.env.NEXT_PUBLIC_DEFAULT_LUMP_SUM_AMOUNT) || 14000,
+    expectedReturn: Number(process.env.NEXT_PUBLIC_DEFAULT_EXPECTED_RETURN) || 5.0,
   });
 
   const [results, setResults] = useState<CalculationResults | null>(null);
