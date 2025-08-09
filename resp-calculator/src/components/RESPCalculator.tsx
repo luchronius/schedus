@@ -313,7 +313,7 @@ export default function RESPCalculator() {
               type="date"
               value={inputs.birthDate}
               onChange={(e) => setInputs(prev => ({ ...prev, birthDate: e.target.value }))}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-td-blue focus:border-td-blue"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-blue focus:border-primary-blue"
               aria-describedby="birthdate-help"
             />
             {inputs.birthDate && (
@@ -335,7 +335,7 @@ export default function RESPCalculator() {
               type="number"
               value={inputs.educationAge}
               onChange={(e) => handleInputChange('educationAge', Number(e.target.value))}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-td-blue focus:border-td-blue"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-blue focus:border-primary-blue"
               min="17"
               max="25"
               aria-describedby="education-age-help"
@@ -359,7 +359,7 @@ export default function RESPCalculator() {
               type="number"
               value={inputs.currentSavings}
               onChange={(e) => handleInputChange('currentSavings', Number(e.target.value))}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-td-blue focus:border-td-blue"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-blue focus:border-primary-blue"
               min="0"
             />
           </div>
@@ -373,7 +373,7 @@ export default function RESPCalculator() {
               type="number"
               value={inputs.contributionsAlreadyMade}
               onChange={(e) => handleInputChange('contributionsAlreadyMade', Number(e.target.value))}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-td-blue focus:border-td-blue"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-blue focus:border-primary-blue"
               min="0"
               max="50000"
             />
@@ -388,7 +388,7 @@ export default function RESPCalculator() {
               type="number"
               value={inputs.grantsAlreadyReceived}
               onChange={(e) => handleInputChange('grantsAlreadyReceived', Number(e.target.value))}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-td-blue focus:border-td-blue"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-blue focus:border-primary-blue"
               min="0"
               max="7200"
             />
@@ -399,7 +399,7 @@ export default function RESPCalculator() {
                   type="checkbox"
                   checked={inputs.grantReceivedThisYear}
                   onChange={(e) => setInputs(prev => ({ ...prev, grantReceivedThisYear: e.target.checked }))}
-                  className="mr-2 h-4 w-4 text-td-blue focus:ring-td-blue focus:ring-2 border-gray-300 rounded"
+                  className="mr-2 h-4 w-4 text-primary-blue focus:ring-primary-blue focus:ring-2 border-gray-300 rounded"
                 />
                 <span className="text-sm text-gray-700">Grant already received this year?</span>
               </label>
@@ -424,7 +424,7 @@ export default function RESPCalculator() {
               id="contribution-frequency"
               value={inputs.contributionFrequency}
               onChange={(e) => setInputs(prev => ({ ...prev, contributionFrequency: e.target.value as 'monthly' | 'annual' }))}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-td-blue focus:border-td-blue"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-blue focus:border-primary-blue"
             >
               <option value="monthly">Monthly</option>
               <option value="annual">Annually</option>
@@ -440,7 +440,7 @@ export default function RESPCalculator() {
               type="number"
               value={inputs.contributionAmount}
               onChange={(e) => handleInputChange('contributionAmount', Number(e.target.value))}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-td-blue focus:border-td-blue"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-blue focus:border-primary-blue"
               min="0"
               placeholder={inputs.contributionFrequency === 'monthly' ? 'Monthly amount' : 'Annual amount'}
             />
@@ -455,7 +455,7 @@ export default function RESPCalculator() {
               type="number"
               value={inputs.lumpSumAmount}
               onChange={(e) => handleInputChange('lumpSumAmount', Number(e.target.value))}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-td-blue focus:border-td-blue"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-blue focus:border-primary-blue"
               min="0"
               max="50000"
               placeholder="Lump sum amount"
@@ -475,7 +475,7 @@ export default function RESPCalculator() {
               step="0.1"
               value={inputs.expectedReturn}
               onChange={(e) => handleInputChange('expectedReturn', Number(e.target.value))}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-td-blue focus:border-td-blue"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-blue focus:border-primary-blue"
               min="0"
               max="15"
             />
@@ -509,7 +509,7 @@ export default function RESPCalculator() {
                   </div>
                   <div className="flex justify-between items-center">
                     <span className="text-gray-700">Government grants:</span>
-                    <span className="font-semibold text-lg text-td-green">${results.governmentGrants.toLocaleString()}</span>
+                    <span className="font-semibold text-lg text-primary-green">${results.governmentGrants.toLocaleString()}</span>
                   </div>
                   {finalYear && (
                     <div className="bg-white p-3 rounded border border-blue-300 mt-4">
@@ -547,7 +547,7 @@ export default function RESPCalculator() {
                   <hr className="border-gray-300" />
                   <div className="flex justify-between items-center">
                     <span className="text-lg font-semibold text-gray-700">Total education funding:</span>
-                    <span className="font-bold text-2xl text-td-blue">${results.totalEducationFunding.toLocaleString()}</span>
+                    <span className="font-bold text-2xl text-primary-blue">${results.totalEducationFunding.toLocaleString()}</span>
                   </div>
                 </div>
               );

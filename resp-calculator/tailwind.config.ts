@@ -9,9 +9,9 @@ export default {
   theme: {
     extend: {
       colors: {
-        'td-green': '#00C853',
-        'td-blue': '#0066CC',
-        'td-dark-blue': '#003875',
+        'primary-green': '#00C853',
+        'primary-blue': '#0066CC',
+        'primary-dark': '#003875',
       },
     },
   },
