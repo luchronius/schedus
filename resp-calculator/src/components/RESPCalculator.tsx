@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import RESPMultiYearChart from './RESPMultiYearChart';
 
 interface CalculatorInputs {
@@ -27,16 +27,16 @@ interface CalculationResults {
 
 export default function RESPCalculator() {
   const [inputs, setInputs] = useState<CalculatorInputs>({
-    birthDate: process.env.NEXT_PUBLIC_DEFAULT_BIRTH_DATE || '2020-01-01',
-    educationAge: Number(process.env.NEXT_PUBLIC_DEFAULT_EDUCATION_AGE) || 18,
-    currentSavings: Number(process.env.NEXT_PUBLIC_DEFAULT_CURRENT_SAVINGS) || 5000,
-    contributionsAlreadyMade: Number(process.env.NEXT_PUBLIC_DEFAULT_CONTRIBUTIONS_ALREADY_MADE) || 5000,
-    grantsAlreadyReceived: Number(process.env.NEXT_PUBLIC_DEFAULT_GRANTS_ALREADY_RECEIVED) || 800,
-    grantReceivedThisYear: process.env.NEXT_PUBLIC_DEFAULT_GRANT_RECEIVED_THIS_YEAR === 'true' || false,
-    contributionAmount: Number(process.env.NEXT_PUBLIC_DEFAULT_CONTRIBUTION_AMOUNT) || 2000,
-    contributionFrequency: (process.env.NEXT_PUBLIC_DEFAULT_CONTRIBUTION_FREQUENCY as 'monthly' | 'annual') || 'annual',
-    lumpSumAmount: Number(process.env.NEXT_PUBLIC_DEFAULT_LUMP_SUM_AMOUNT) || 14000,
-    expectedReturn: Number(process.env.NEXT_PUBLIC_DEFAULT_EXPECTED_RETURN) || 5.0,
+    birthDate: '2020-01-01',
+    educationAge: 18,
+    currentSavings: 5000,
+    contributionsAlreadyMade: 5000,
+    grantsAlreadyReceived: 800,
+    grantReceivedThisYear: false,
+    contributionAmount: 2000,
+    contributionFrequency: 'annual',
+    lumpSumAmount: 14000,
+    expectedReturn: 5.0,
   });
 
   const [results, setResults] = useState<CalculationResults | null>(null);
@@ -73,24 +73,24 @@ export default function RESPCalculator() {
   };
 
   // Calculate years and months from now to education start
-  const calculateTimeToEducation = (birthDate: string, educationAge: number) => {
-    const birth = new Date(birthDate);
-    const educationStart = new Date(birth.getFullYear() + educationAge, 8, 1); // September 1st
-    const today = new Date();
+  // const calculateTimeToEducation = (birthDate: string, educationAge: number) => {
+  //   const birth = new Date(birthDate);
+  //   const educationStart = new Date(birth.getFullYear() + educationAge, 8, 1); // September 1st
+  //   const today = new Date();
     
-    const totalMonths = (educationStart.getFullYear() - today.getFullYear()) * 12 + 
-                       (educationStart.getMonth() - today.getMonth());
+  //   const totalMonths = (educationStart.getFullYear() - today.getFullYear()) * 12 + 
+  //                      (educationStart.getMonth() - today.getMonth());
     
-    return Math.max(0, totalMonths);
-  };
+  //   return Math.max(0, totalMonths);
+  // };
 
-  // Calculate yearly progression data for multi-year chart
-  const calculateYearlyProgression = () => {
-    // Parse date to avoid timezone issues  
-    const birthDateParts = inputs.birthDate.split('-');
+  // Calculate yearly progression data for multi-year chart (memoized for performance)
+  const calculateYearlyProgression = useMemo(() => {
+    return () => {
+      // Parse date to avoid timezone issues  
+      const birthDateParts = inputs.birthDate.split('-');
     const birth = new Date(parseInt(birthDateParts[0]), parseInt(birthDateParts[1]) - 1, parseInt(birthDateParts[2]));
     const today = new Date();
-    const currentYear = today.getFullYear();
     const monthlyContribution = inputs.contributionFrequency === 'monthly' 
       ? inputs.contributionAmount 
       : inputs.contributionAmount / 12;
@@ -108,8 +108,7 @@ export default function RESPCalculator() {
     let remainingContributionRoom = Math.max(0, maxLifetimeContributions - cumulativeContributions);
     
     // Start from next birthday and go until education starts
-    let currentAge = calculateCurrentAge(inputs.birthDate);
-    let year = currentYear;
+    const currentAge = calculateCurrentAge(inputs.birthDate);
     
     // Start from the next age they'll turn and go until education age
     const nextAge = currentAge.years + 1;
@@ -193,7 +192,6 @@ export default function RESPCalculator() {
         if (birthdayThisYear >= feb1ThisYear) {
           // CESG grant calculation: 20% on first $2,500 contributed per year
           // BUT only if there are actual new contributions this year
-          const annualContribution = monthlyContribution * 12;
           let contributionForGrantCalculation = 0;
           
           if (age === nextAge + 1) {
@@ -238,8 +236,20 @@ export default function RESPCalculator() {
       });
     }
     
-    return yearlyData;
-  };
+      return yearlyData;
+    };
+  }, [
+    inputs.birthDate, 
+    inputs.educationAge, 
+    inputs.currentSavings, 
+    inputs.contributionsAlreadyMade, 
+    inputs.grantsAlreadyReceived, 
+    inputs.grantReceivedThisYear, 
+    inputs.contributionAmount, 
+    inputs.contributionFrequency, 
+    inputs.lumpSumAmount, 
+    inputs.expectedReturn
+  ]);
 
   const calculateRESP = () => {
     // Use the yearly progression data which has the accurate calculations
@@ -289,20 +299,22 @@ export default function RESPCalculator() {
     <div className="bg-white rounded-lg shadow-lg p-8">
       <h2 className="text-3xl font-bold text-gray-900 mb-6">RESP Calculator</h2>
       <p className="text-gray-600 mb-8">
-        Plan for your child's education with our RESP calculator. See how much you could save with government grants and compound growth.
+        Plan for your child&apos;s education with our RESP calculator. See how much you could save with government grants and compound growth.
       </p>
 
       <div className="grid md:grid-cols-2 gap-8">
         <div className="space-y-6">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Child's birthdate
+            <label htmlFor="child-birthdate" className="block text-sm font-medium text-gray-700 mb-2">
+              Child&apos;s birthdate
             </label>
             <input
+              id="child-birthdate"
               type="date"
               value={inputs.birthDate}
               onChange={(e) => setInputs(prev => ({ ...prev, birthDate: e.target.value }))}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-td-blue focus:border-td-blue"
+              aria-describedby="birthdate-help"
             />
             {inputs.birthDate && (
               <p className="text-sm text-gray-600 mt-1">
@@ -315,16 +327,18 @@ export default function RESPCalculator() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label htmlFor="education-age" className="block text-sm font-medium text-gray-700 mb-2">
               Age when education starts
             </label>
             <input
+              id="education-age"
               type="number"
               value={inputs.educationAge}
               onChange={(e) => handleInputChange('educationAge', Number(e.target.value))}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-td-blue focus:border-td-blue"
               min="17"
               max="25"
+              aria-describedby="education-age-help"
             />
             {inputs.birthDate && (
               <p className="text-sm text-gray-600 mt-1">
@@ -337,10 +351,11 @@ export default function RESPCalculator() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label htmlFor="current-savings" className="block text-sm font-medium text-gray-700 mb-2">
               Current RESP savings
             </label>
             <input
+              id="current-savings"
               type="number"
               value={inputs.currentSavings}
               onChange={(e) => handleInputChange('currentSavings', Number(e.target.value))}
@@ -350,10 +365,11 @@ export default function RESPCalculator() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label htmlFor="contributions-made" className="block text-sm font-medium text-gray-700 mb-2">
               Contributions already made
             </label>
             <input
+              id="contributions-made"
               type="number"
               value={inputs.contributionsAlreadyMade}
               onChange={(e) => handleInputChange('contributionsAlreadyMade', Number(e.target.value))}
@@ -364,10 +380,11 @@ export default function RESPCalculator() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label htmlFor="grants-received" className="block text-sm font-medium text-gray-700 mb-2">
               Grants already received
             </label>
             <input
+              id="grants-received"
               type="number"
               value={inputs.grantsAlreadyReceived}
               onChange={(e) => handleInputChange('grantsAlreadyReceived', Number(e.target.value))}
@@ -376,8 +393,9 @@ export default function RESPCalculator() {
               max="7200"
             />
             <div className="mt-3">
-              <label className="flex items-center">
+              <label htmlFor="grant-this-year" className="flex items-center">
                 <input
+                  id="grant-this-year"
                   type="checkbox"
                   checked={inputs.grantReceivedThisYear}
                   onChange={(e) => setInputs(prev => ({ ...prev, grantReceivedThisYear: e.target.checked }))}
@@ -399,10 +417,11 @@ export default function RESPCalculator() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label htmlFor="contribution-frequency" className="block text-sm font-medium text-gray-700 mb-2">
               Contribution frequency
             </label>
             <select
+              id="contribution-frequency"
               value={inputs.contributionFrequency}
               onChange={(e) => setInputs(prev => ({ ...prev, contributionFrequency: e.target.value as 'monthly' | 'annual' }))}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-td-blue focus:border-td-blue"
@@ -413,10 +432,11 @@ export default function RESPCalculator() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label htmlFor="contribution-amount" className="block text-sm font-medium text-gray-700 mb-2">
               Amount I will contribute
             </label>
             <input
+              id="contribution-amount"
               type="number"
               value={inputs.contributionAmount}
               onChange={(e) => handleInputChange('contributionAmount', Number(e.target.value))}
@@ -427,10 +447,11 @@ export default function RESPCalculator() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label htmlFor="lump-sum-amount" className="block text-sm font-medium text-gray-700 mb-2">
               One-time lump sum contribution
             </label>
             <input
+              id="lump-sum-amount"
               type="number"
               value={inputs.lumpSumAmount}
               onChange={(e) => handleInputChange('lumpSumAmount', Number(e.target.value))}
@@ -445,10 +466,11 @@ export default function RESPCalculator() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label htmlFor="expected-return" className="block text-sm font-medium text-gray-700 mb-2">
               Expected annual return (%)
             </label>
             <input
+              id="expected-return"
               type="number"
               step="0.1"
               value={inputs.expectedReturn}
@@ -462,6 +484,7 @@ export default function RESPCalculator() {
           <button
             onClick={calculateRESP}
             className="w-full bg-green-600 text-white py-3 px-6 rounded-md hover:bg-green-700 transition-colors font-semibold shadow-md"
+            aria-label="Calculate RESP Savings"
           >
             Calculate RESP Savings
           </button>
@@ -472,7 +495,7 @@ export default function RESPCalculator() {
             <h3 className="text-2xl font-bold text-gray-900 mb-4">Your RESP Projection</h3>
             {(() => {
               // yearlyData is already calculated in calculateRESP, but we need it here too for the final year display
-              const yearlyData = calculateYearlyProgression();
+              const yearlyData = results ? calculateYearlyProgression() : [];
               const finalYear = yearlyData.length > 0 ? yearlyData[yearlyData.length - 1] : null;
               return (
                 <div className="space-y-4">
