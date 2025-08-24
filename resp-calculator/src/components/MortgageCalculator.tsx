@@ -9,13 +9,18 @@ import {
   validateFinancialInput
 } from '../utils/financialCalculations';
 
+interface LumpSumPayment {
+  id: string;
+  amount: number;
+  year: number;
+}
+
 interface MortgageInputs {
   mortgageAmount: number;
   annualRate: number;
   monthlyPayment: number;
   extraMonthlyPayment: number;
-  lumpSumAmount: number;
-  lumpSumYear: number;
+  lumpSumPayments: LumpSumPayment[];
 }
 
 interface MortgageResults {
@@ -88,8 +93,7 @@ export default function MortgageCalculator() {
     monthlyPayment: number,
     annualRate: number,
     extraMonthlyPayment: number = 0,
-    lumpSumAmount: number = 0,
-    lumpSumYear: number = 0
+    lumpSumPayments: LumpSumPayment[] = []
   ): AmortizationPayment[] => {
     const monthlyRate = annualRate / 12;
     const totalPayment = monthlyPayment + extraMonthlyPayment;
@@ -102,15 +106,21 @@ export default function MortgageCalculator() {
       const interestPayment = remainingBalance * monthlyRate;
       let principalPayment = totalPayment - interestPayment;
       
-      // Apply lump sum payment if it's the right year
+      // Apply lump sum payments if it's the right year
       const currentYear = Math.ceil(paymentNumber / 12);
-      if (lumpSumYear === 0 && paymentNumber === 1) {
-        // Apply lump sum immediately (first payment)
-        principalPayment += lumpSumAmount;
-      } else if (currentYear === lumpSumYear && paymentNumber === lumpSumYear * 12) {
-        // Apply lump sum at end of specified year
-        principalPayment += lumpSumAmount;
+      let totalLumpSumThisPayment = 0;
+      
+      for (const lumpSum of lumpSumPayments) {
+        if (lumpSum.year === 0 && paymentNumber === 1) {
+          // Apply lump sum immediately (first payment)
+          totalLumpSumThisPayment += lumpSum.amount;
+        } else if (currentYear === lumpSum.year && paymentNumber === lumpSum.year * 12) {
+          // Apply lump sum at end of specified year
+          totalLumpSumThisPayment += lumpSum.amount;
+        }
       }
+      
+      principalPayment += totalLumpSumThisPayment;
       
       // Don't pay more than remaining balance
       if (principalPayment > remainingBalance) {
@@ -138,21 +148,47 @@ export default function MortgageCalculator() {
     annualRate: 4.04,
     monthlyPayment: 4624.05,
     extraMonthlyPayment: 0,
-    lumpSumAmount: 0,
-    lumpSumYear: 0
+    lumpSumPayments: []
   });
 
   const [results, setResults] = useState<MortgageResults | null>(null);
   const [errors, setErrors] = useState<{[key: string]: string}>({});
   const [scheduleView, setScheduleView] = useState<'summary' | 'yearly' | 'full'>('summary');
+
+  const addLumpSumPayment = () => {
+    const newLumpSum: LumpSumPayment = {
+      id: Date.now().toString(),
+      amount: 0,
+      year: 1
+    };
+    setInputs(prev => ({
+      ...prev,
+      lumpSumPayments: [...prev.lumpSumPayments, newLumpSum]
+    }));
+  };
+
+  const removeLumpSumPayment = (id: string) => {
+    setInputs(prev => ({
+      ...prev,
+      lumpSumPayments: prev.lumpSumPayments.filter(lump => lump.id !== id)
+    }));
+  };
+
+  const updateLumpSumPayment = (id: string, field: 'amount' | 'year', value: number) => {
+    setInputs(prev => ({
+      ...prev,
+      lumpSumPayments: prev.lumpSumPayments.map(lump =>
+        lump.id === id ? { ...lump, [field]: value } : lump
+      )
+    }));
+  };
   
   const generateScheduleWithExtraPayments = (
     principal: number,
     annualRate: number,
     termInYears: number,
     extraMonthlyPayment: number = 0,
-    lumpSumAmount: number = 0,
-    lumpSumYear: number = 0
+    lumpSumPayments: LumpSumPayment[] = []
   ): AmortizationPayment[] => {
     const monthlyRate = annualRate / 12;
     const totalPayments = Math.ceil(termInYears * 12);
@@ -166,18 +202,21 @@ export default function MortgageCalculator() {
       const interestPayment = remainingBalance * monthlyRate;
       let principalPayment = baseMonthlyPayment - interestPayment + extraMonthlyPayment;
       
-      // Apply lump sum payment if it's the right year
+      // Apply lump sum payments if it's the right year
       const currentYear = Math.ceil(paymentNumber / 12);
-      let lumpSumThisPayment = 0;
-      if (lumpSumYear === 0 && paymentNumber === 1) {
-        // Apply lump sum immediately (first payment)
-        lumpSumThisPayment = lumpSumAmount;
-        principalPayment += lumpSumAmount;
-      } else if (currentYear === lumpSumYear && paymentNumber === lumpSumYear * 12) {
-        // Apply lump sum at end of specified year
-        lumpSumThisPayment = lumpSumAmount;
-        principalPayment += lumpSumAmount;
+      let totalLumpSumThisPayment = 0;
+      
+      for (const lumpSum of lumpSumPayments) {
+        if (lumpSum.year === 0 && paymentNumber === 1) {
+          // Apply lump sum immediately (first payment)
+          totalLumpSumThisPayment += lumpSum.amount;
+        } else if (currentYear === lumpSum.year && paymentNumber === lumpSum.year * 12) {
+          // Apply lump sum at end of specified year
+          totalLumpSumThisPayment += lumpSum.amount;
+        }
       }
+      
+      principalPayment += totalLumpSumThisPayment;
       
       // Don't pay more than remaining balance
       if (principalPayment > remainingBalance) {
@@ -228,13 +267,15 @@ export default function MortgageCalculator() {
       newErrors.extraMonthlyPayment = 'Extra payment cannot be negative';
     }
 
-    if (inputs.lumpSumAmount < 0) {
-      newErrors.lumpSumAmount = 'Lump sum amount cannot be negative';
-    }
-
-    if (inputs.lumpSumAmount > 0 && (inputs.lumpSumYear < 0 || inputs.lumpSumYear > 50)) {
-      newErrors.lumpSumYear = 'Lump sum year must be between 0 and 50 (0 = immediate payment)';
-    }
+    // Validate lump sum payments
+    inputs.lumpSumPayments.forEach((lumpSum, index) => {
+      if (lumpSum.amount < 0) {
+        newErrors[`lumpSum_${lumpSum.id}_amount`] = 'Lump sum amount cannot be negative';
+      }
+      if (lumpSum.amount > 0 && (lumpSum.year < 0 || lumpSum.year > 50)) {
+        newErrors[`lumpSum_${lumpSum.id}_year`] = 'Lump sum year must be between 0 and 50 (0 = immediate payment)';
+      }
+    });
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -267,8 +308,7 @@ export default function MortgageCalculator() {
       monthlyPrincipalInterest,
       annualRateDecimal,
       inputs.extraMonthlyPayment,
-      inputs.lumpSumAmount,
-      inputs.lumpSumYear
+      inputs.lumpSumPayments
     );
     
     const totalInterest = schedule.reduce((sum, payment) => sum + payment.interestPayment, 0);
@@ -439,47 +479,83 @@ export default function MortgageCalculator() {
                 </p>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    One-time Lump Sum ($)
+              <div>
+                <div className="flex justify-between items-center mb-3">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Lump Sum Payments
                   </label>
-                  <input
-                    type="number"
-                    value={inputs.lumpSumAmount}
-                    onChange={(e) => handleInputChange('lumpSumAmount', Number(e.target.value))}
-                    className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 ${
-                      errors.lumpSumAmount ? 'border-red-300' : 'border-gray-300'
-                    }`}
-                    min="0"
-                    step="1000"
-                    placeholder="Enter lump sum amount"
-                  />
-                  {errors.lumpSumAmount && (
-                    <p className="text-red-600 text-sm mt-1">{errors.lumpSumAmount}</p>
-                  )}
+                  <button
+                    type="button"
+                    onClick={addLumpSumPayment}
+                    className="px-3 py-1 bg-orange-600 text-white text-sm rounded hover:bg-orange-700 transition-colors"
+                  >
+                    + Add Lump Sum
+                  </button>
                 </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Apply Lump Sum in Year
-                  </label>
-                  <input
-                    type="number"
-                    value={inputs.lumpSumYear}
-                    onChange={(e) => handleInputChange('lumpSumYear', Number(e.target.value))}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
-                    min="0"
-                    max="50"
-                    placeholder="Enter year (0 = now)"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    0 = Apply immediately, 1+ = Apply at end of that year
-                  </p>
-                  {errors.lumpSumYear && (
-                    <p className="text-red-600 text-sm mt-1">{errors.lumpSumYear}</p>
-                  )}
-                </div>
+                
+                {inputs.lumpSumPayments.length === 0 ? (
+                  <p className="text-sm text-gray-500 italic">No lump sum payments added yet. Click "Add Lump Sum" to add one.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {inputs.lumpSumPayments.map((lumpSum, index) => (
+                      <div key={lumpSum.id} className="p-3 bg-gray-50 rounded-md border border-gray-200">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-sm font-medium text-gray-700">Lump Sum #{index + 1}</span>
+                          <button
+                            type="button"
+                            onClick={() => removeLumpSumPayment(lumpSum.id)}
+                            className="text-red-600 hover:text-red-800 text-sm"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-xs font-medium text-gray-600 mb-1">
+                              Amount ($)
+                            </label>
+                            <input
+                              type="number"
+                              value={lumpSum.amount}
+                              onChange={(e) => updateLumpSumPayment(lumpSum.id, 'amount', Number(e.target.value))}
+                              className={`w-full px-2 py-1 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 ${
+                                errors[`lumpSum_${lumpSum.id}_amount`] ? 'border-red-300' : 'border-gray-300'
+                              }`}
+                              min="0"
+                              step="1000"
+                              placeholder="Amount"
+                            />
+                            {errors[`lumpSum_${lumpSum.id}_amount`] && (
+                              <p className="text-red-600 text-xs mt-1">{errors[`lumpSum_${lumpSum.id}_amount`]}</p>
+                            )}
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-600 mb-1">
+                              Year
+                            </label>
+                            <input
+                              type="number"
+                              value={lumpSum.year}
+                              onChange={(e) => updateLumpSumPayment(lumpSum.id, 'year', Number(e.target.value))}
+                              className={`w-full px-2 py-1 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 ${
+                                errors[`lumpSum_${lumpSum.id}_year`] ? 'border-red-300' : 'border-gray-300'
+                              }`}
+                              min="0"
+                              max="50"
+                              placeholder="Year"
+                            />
+                            {errors[`lumpSum_${lumpSum.id}_year`] && (
+                              <p className="text-red-600 text-xs mt-1">{errors[`lumpSum_${lumpSum.id}_year`]}</p>
+                            )}
+                            <p className="text-xs text-gray-500 mt-1">
+                              0 = immediately, 1+ = end of year
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -582,9 +658,9 @@ export default function MortgageCalculator() {
                   </span>
                 </div>
                 <p className="text-xs text-gray-500">
-                  Over {results.calculatedTermInYears} years {results.calculatedTermInMonths} months
+                  Over {formatYearsAndMonths(results.schedule.length / 12)}
                 </p>
-                {(inputs.extraMonthlyPayment > 0 || inputs.lumpSumAmount > 0) && (
+                {(inputs.extraMonthlyPayment > 0 || inputs.lumpSumPayments.length > 0) && (
                   <div className="mt-2 pt-2 border-t border-red-200">
                     <p className="text-xs text-green-600">
                       Interest saved: ${results.interestSaved.toLocaleString()}
@@ -597,9 +673,28 @@ export default function MortgageCalculator() {
               </div>
             </div>
 
-            {(inputs.extraMonthlyPayment > 0 || inputs.lumpSumAmount > 0) && (
+            {(inputs.extraMonthlyPayment > 0 || inputs.lumpSumPayments.length > 0) && (
               <div className="mt-6 p-4 bg-green-50 rounded-lg border border-green-200">
                 <h4 className="text-lg font-semibold text-green-800 mb-3">Extra Payment Impact</h4>
+                {inputs.lumpSumPayments.length > 0 && (
+                  <div className="mb-4 p-3 bg-white rounded border border-green-300">
+                    <h5 className="text-sm font-semibold text-green-700 mb-2">Lump Sum Payments Summary:</h5>
+                    <div className="space-y-1 text-sm">
+                      {inputs.lumpSumPayments.map((lumpSum, index) => (
+                        <div key={lumpSum.id} className="flex justify-between">
+                          <span>Payment #{index + 1}:</span>
+                          <span>${lumpSum.amount.toLocaleString()} in year {lumpSum.year === 0 ? 'immediately' : lumpSum.year}</span>
+                        </div>
+                      ))}
+                      <div className="pt-2 border-t border-green-200 font-semibold">
+                        <div className="flex justify-between">
+                          <span>Total Lump Sum:</span>
+                          <span>${inputs.lumpSumPayments.reduce((sum, lump) => sum + lump.amount, 0).toLocaleString()}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div>
                     <div className="font-medium text-gray-700 mb-2">Standard Mortgage:</div>
@@ -612,7 +707,7 @@ export default function MortgageCalculator() {
                   <div>
                     <div className="font-medium text-gray-700 mb-2">With Extra Payments:</div>
                     <div className="space-y-1">
-                      <div className="text-green-600">Payoff time: {results.actualPayoffYear} years</div>
+                      <div className="text-green-600">Payoff time: {formatYearsAndMonths(results.schedule.length / 12)}</div>
                       <div className="text-green-600">Total interest: ${results.totalInterest.toLocaleString()}</div>
                       <div className="text-green-600">Total payments: {results.schedule.length}</div>
                     </div>
@@ -738,7 +833,7 @@ export default function MortgageCalculator() {
                 <li>• Your ${inputs.monthlyPayment.toLocaleString()} monthly payment will pay off the loan in {results.calculatedTermInYears} years, {results.calculatedTermInMonths} months</li>
                 <li>• Interest represents {((results.totalInterest / results.loanAmount) * 100).toFixed(1)}% of loan amount</li>
                 <li>• Principal & Interest portion: ${results.monthlyPrincipalInterest.toLocaleString()} of your monthly payment</li>
-                {(inputs.extraMonthlyPayment > 0 || inputs.lumpSumAmount > 0) && (
+                {(inputs.extraMonthlyPayment > 0 || inputs.lumpSumPayments.length > 0) && (
                   <li>• Extra payments will save you ${results.interestSaved.toLocaleString()} and {formatYearsAndMonths(results.yearsReduced)}</li>
                 )}
               </ul>

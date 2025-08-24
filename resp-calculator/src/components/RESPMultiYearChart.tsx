@@ -23,7 +23,12 @@ export default function RESPMultiYearChart({ yearlyData }: RESPMultiYearChartPro
 
   const renderChart = (data: YearData[], chartIndex: number) => {
     // Find the maximum value across ALL data for consistent scaling across charts
-    const allValues = allData.flatMap(d => [d.currentSavings, d.grantsReceived, d.investmentGrowth]);
+    // Handle missing properties gracefully by defaulting to 0
+    const allValues = allData.flatMap(d => [
+      d.currentSavings || 0, 
+      d.grantsReceived || 0, 
+      d.investmentGrowth || 0
+    ]);
     const maxValue = Math.max(...allValues, 1);
     
     // Chart dimensions - use container width
@@ -31,8 +36,6 @@ export default function RESPMultiYearChart({ yearlyData }: RESPMultiYearChartPro
     const yearGroupWidth = 180; // Space for 3 bars + spacing per year
     const chartHeight = 400;
     const barWidth = 50; // Good sized bars
-    const barSpacing = 0; // No space between bars in same year
-    const yearSpacing = 40; // Space between different years
     const startX = (chartWidth - (data.length * yearGroupWidth)) / 2 + 30; // Center the bars
     const bottomY = chartHeight - 80;
     const maxBarHeight = 280;
@@ -46,7 +49,13 @@ export default function RESPMultiYearChart({ yearlyData }: RESPMultiYearChartPro
           }
         </h3>
         
-        <svg width={chartWidth} height={chartHeight} className="mx-auto">
+        <svg 
+          width={chartWidth} 
+          height={chartHeight} 
+          className="mx-auto"
+          role="img"
+          aria-label={`RESP investment progression chart showing ${data.length} years of data`}
+        >
           {/* Y-axis */}
           <line 
             x1="40" 
@@ -71,25 +80,30 @@ export default function RESPMultiYearChart({ yearlyData }: RESPMultiYearChartPro
           {data.map((yearData, yearIndex) => {
             const yearStartX = startX + yearIndex * yearGroupWidth;
             
+            // Handle missing properties gracefully by defaulting to 0
+            const currentSavings = yearData.currentSavings || 0;
+            const grantsReceived = yearData.grantsReceived || 0;
+            const investmentGrowth = yearData.investmentGrowth || 0;
+            
             const bars = [
               {
                 x: yearStartX,
-                height: (yearData.currentSavings / maxValue) * maxBarHeight,
-                value: yearData.currentSavings,
+                height: (currentSavings / maxValue) * maxBarHeight,
+                value: currentSavings,
                 label: 'Contributions',
                 color: '#3b82f6' // blue
               },
               {
                 x: yearStartX + barWidth, // No spacing between bars
-                height: (yearData.grantsReceived / maxValue) * maxBarHeight,
-                value: yearData.grantsReceived,
+                height: (grantsReceived / maxValue) * maxBarHeight,
+                value: grantsReceived,
                 label: 'Grants',
                 color: '#10b981' // green
               },
               {
                 x: yearStartX + barWidth * 2, // No spacing between bars
-                height: (yearData.investmentGrowth / maxValue) * maxBarHeight,
-                value: yearData.investmentGrowth,
+                height: (investmentGrowth / maxValue) * maxBarHeight,
+                value: investmentGrowth,
                 label: 'Growth',
                 color: '#8b5cf6' // purple
               }
@@ -161,7 +175,7 @@ export default function RESPMultiYearChart({ yearlyData }: RESPMultiYearChartPro
                   textAnchor="middle"
                   className="text-sm font-bold fill-gray-800"
                 >
-                  Total: ${(yearData.currentSavings + yearData.grantsReceived + yearData.investmentGrowth).toLocaleString()}
+                  Total: ${(currentSavings + grantsReceived + investmentGrowth).toLocaleString()}
                 </text>
               </g>
             );
@@ -199,6 +213,31 @@ export default function RESPMultiYearChart({ yearlyData }: RESPMultiYearChartPro
       </div>
     );
   };
+
+  // Handle empty data case
+  if (allData.length === 0) {
+    return (
+      <div className="bg-white p-8 rounded-lg border border-gray-200 mb-6 w-full">
+        <h3 className="text-lg font-bold text-gray-900 mb-4 text-center">
+          Investment Progression Until Education Starts
+        </h3>
+        <svg 
+          className="mx-auto" 
+          width="1200" 
+          height="400"
+          role="img"
+          aria-label="Empty RESP investment progression chart - no data available"
+        >
+          {/* Empty state - just axes */}
+          <line x1="40" y1="60" x2="40" y2="320" stroke="#e5e7eb" strokeWidth="2" />
+          <line x1="40" y1="320" x2="1180" y2="320" stroke="#e5e7eb" strokeWidth="2" />
+          <text x="600" y="200" textAnchor="middle" className="text-lg fill-gray-500">
+            No data available
+          </text>
+        </svg>
+      </div>
+    );
+  }
 
   return (
     <div>
