@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useSession } from 'next-auth/react';
 import type { RealEstateAssetDB, BankAccountDB, RegisteredAccountDB, AssetPortfolioSnapshot, AssetPortfolio } from '@/lib/database';
 
@@ -99,6 +99,25 @@ export default function AssetTracker() {
   const [snapshotNotes, setSnapshotNotes] = useState('');
   const [isCreatingSnapshot, setIsCreatingSnapshot] = useState(false);
   const [savingAssets, setSavingAssets] = useState<Set<string>>(new Set());
+  const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
+  const [snapshotToDelete, setSnapshotToDelete] = useState<AssetPortfolioSnapshot | null>(null);
+  
+  // Financial Institutions List (alphabetically sorted)
+  const FINANCIAL_INSTITUTIONS = [
+    'BMO',
+    'CIBC',
+    'Industrial Alliance',
+    'Interactive Brokers',
+    'PC Financial',
+    'Questrade',
+    'RBC',
+    'Scotiabank',
+    'Simplii',
+    'Sunlife',
+    'Tangerine',
+    'TD Bank',
+    'WealthSimple'
+  ];
   
   // Portfolio Management States
   const [portfolios, setPortfolios] = useState<AssetPortfolio[]>([]);
@@ -118,6 +137,89 @@ export default function AssetTracker() {
   const convertToCAD = useCallback((amount: number, currency: 'CAD' | 'USD'): number => {
     return currency === 'USD' ? amount * usdToCadRate : amount;
   }, [usdToCadRate]);
+
+  // Institution Dropdown Component
+  const InstitutionSelect = ({ 
+    value, 
+    onChange, 
+    className = "" 
+  }: { 
+    value: string; 
+    onChange: (value: string) => void;
+    className?: string;
+  }) => {
+    const [isCustom, setIsCustom] = useState(() => !FINANCIAL_INSTITUTIONS.includes(value) && value !== '');
+    const [customValue, setCustomValue] = useState(() => 
+      !FINANCIAL_INSTITUTIONS.includes(value) && value !== '' ? value : ''
+    );
+
+    // Update customValue when value prop changes from outside
+    useEffect(() => {
+      if (!FINANCIAL_INSTITUTIONS.includes(value) && value !== '') {
+        setCustomValue(value);
+        setIsCustom(true);
+      }
+    }, [value]);
+
+    const handleSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+      const selectedValue = e.target.value;
+      if (selectedValue === 'custom') {
+        setIsCustom(true);
+        // Don't change the value immediately, let user type
+      } else {
+        setIsCustom(false);
+        setCustomValue('');
+        onChange(selectedValue);
+      }
+    };
+
+    const handleCustomChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const newValue = e.target.value;
+      setCustomValue(newValue);
+      onChange(newValue);
+    };
+
+    if (isCustom) {
+      return (
+        <div className="space-y-2">
+          <input
+            type="text"
+            value={customValue}
+            onChange={handleCustomChange}
+            placeholder="Enter institution name"
+            className={`w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 ${className}`}
+          />
+          <button
+            type="button"
+            onClick={() => {
+              setIsCustom(false);
+              setCustomValue('');
+              onChange('');
+            }}
+            className="text-sm text-blue-600 hover:text-blue-800 underline"
+          >
+            Choose from preset list
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <select
+        value={FINANCIAL_INSTITUTIONS.includes(value) ? value : (value === '' ? '' : 'custom')}
+        onChange={handleSelectChange}
+        className={`w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 ${className}`}
+      >
+        <option value="">Select Institution</option>
+        {FINANCIAL_INSTITUTIONS.map((institution) => (
+          <option key={institution} value={institution}>
+            {institution}
+          </option>
+        ))}
+        <option value="custom">Other (fill in yourself)</option>
+      </select>
+    );
+  };
 
   // Save exchange rate to current portfolio when it changes
   useEffect(() => {
@@ -1161,10 +1263,18 @@ export default function AssetTracker() {
     }
   };
 
-  // Delete a snapshot
-  const deleteSnapshot = async (snapshotId: number) => {
+  // Show delete confirmation dialog
+  const showDeleteSnapshotConfirmation = (snapshot: AssetPortfolioSnapshot) => {
+    setSnapshotToDelete(snapshot);
+    setShowDeleteConfirmation(true);
+  };
+
+  // Delete a snapshot (after confirmation)
+  const deleteSnapshot = async () => {
+    if (!snapshotToDelete) return;
+    
     try {
-      const response = await fetch(`/api/asset-snapshots/${snapshotId}`, {
+      const response = await fetch(`/api/asset-snapshots/${snapshotToDelete.id}`, {
         method: 'DELETE'
       });
 
@@ -1173,11 +1283,23 @@ export default function AssetTracker() {
         if (data.success && currentPortfolioId) {
           // Reload snapshots
           await loadSnapshots(currentPortfolioId);
+          // Close confirmation dialog
+          setShowDeleteConfirmation(false);
+          setSnapshotToDelete(null);
         }
       }
     } catch (error) {
       console.error('Error deleting snapshot:', error);
+      // Close confirmation dialog even on error
+      setShowDeleteConfirmation(false);
+      setSnapshotToDelete(null);
     }
+  };
+
+  // Cancel delete confirmation
+  const cancelDeleteSnapshot = () => {
+    setShowDeleteConfirmation(false);
+    setSnapshotToDelete(null);
   };
 
   // Portfolio Management Functions
@@ -1594,7 +1716,7 @@ export default function AssetTracker() {
                       </label>
                       <input
                         type="number"
-                        value={property.estimatedValue || 0}
+                        value={property.estimatedValue || ''}
                         onChange={(e) => updateRealEstate(property.id, 'estimatedValue', Number(e.target.value) || 0)}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500"
                         min="0"
@@ -1608,7 +1730,7 @@ export default function AssetTracker() {
                       </label>
                       <input
                         type="number"
-                        value={property.mortgageBalance || 0}
+                        value={property.mortgageBalance || ''}
                         onChange={(e) => updateRealEstate(property.id, 'mortgageBalance', Number(e.target.value) || 0)}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500"
                         min="0"
@@ -1622,7 +1744,7 @@ export default function AssetTracker() {
                       </label>
                       <input
                         type="number"
-                        value={property.monthlyPayment || 0}
+                        value={property.monthlyPayment || ''}
                         onChange={(e) => updateRealEstate(property.id, 'monthlyPayment', Number(e.target.value) || 0)}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500"
                         min="0"
@@ -1757,12 +1879,10 @@ export default function AssetTracker() {
                       <label className="block text-sm font-medium text-gray-700 mb-1">
                         Institution
                       </label>
-                      <input
-                        type="text"
+                      <InstitutionSelect
                         value={account.institutionName}
-                        onChange={(e) => updateBankAccount(account.id, 'institutionName', e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        placeholder="Bank name"
+                        onChange={(value) => updateBankAccount(account.id, 'institutionName', value)}
+                        className="focus:ring-blue-500"
                       />
                     </div>
                     
@@ -1785,7 +1905,7 @@ export default function AssetTracker() {
                       </label>
                       <input
                         type="number"
-                        value={account.currentBalance || 0}
+                        value={account.currentBalance || ''}
                         onChange={(e) => updateBankAccount(account.id, 'currentBalance', Number(e.target.value) || 0)}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                         step="100"
@@ -1934,12 +2054,10 @@ export default function AssetTracker() {
                       <label className="block text-sm font-medium text-gray-700 mb-1">
                         Institution
                       </label>
-                      <input
-                        type="text"
+                      <InstitutionSelect
                         value={account.institutionName}
-                        onChange={(e) => updateRegisteredAccount(account.id, 'institutionName', e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
-                        placeholder="Institution name"
+                        onChange={(value) => updateRegisteredAccount(account.id, 'institutionName', value)}
+                        className="focus:ring-purple-500"
                       />
                     </div>
                     
@@ -1962,7 +2080,7 @@ export default function AssetTracker() {
                       </label>
                       <input
                         type="number"
-                        value={account.currentBalance || 0}
+                        value={account.currentBalance || ''}
                         onChange={(e) => updateRegisteredAccount(account.id, 'currentBalance', Number(e.target.value) || 0)}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
                         step="100"
@@ -2453,7 +2571,7 @@ export default function AssetTracker() {
                       )}
                     </div>
                     <button
-                      onClick={() => deleteSnapshot(snapshot.id)}
+                      onClick={() => showDeleteSnapshotConfirmation(snapshot)}
                       className="text-red-600 hover:text-red-800 text-sm"
                     >
                       🗑️ Delete
@@ -3066,6 +3184,54 @@ export default function AssetTracker() {
                     {portfolioDialogMode === 'delete' && '🗑️ Delete Portfolio'}
                   </>
                 )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Snapshot Confirmation Dialog */}
+      {showDeleteConfirmation && snapshotToDelete && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+              🗑️ Delete Snapshot
+            </h3>
+            
+            <div className="mb-6">
+              <p className="text-gray-700 mb-2">
+                Are you sure you want to delete this snapshot?
+              </p>
+              <div className="bg-gray-50 p-3 rounded-md">
+                <div className="font-medium text-gray-900">
+                  {snapshotToDelete.name}
+                </div>
+                <div className="text-sm text-gray-600">
+                  Created on {new Date(snapshotToDelete.createdAt).toLocaleDateString()}
+                </div>
+                {snapshotToDelete.notes && (
+                  <div className="text-sm text-gray-600 mt-1">
+                    Notes: {snapshotToDelete.notes}
+                  </div>
+                )}
+              </div>
+              <p className="text-sm text-red-600 mt-3">
+                This action cannot be undone.
+              </p>
+            </div>
+            
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={cancelDeleteSnapshot}
+                className="px-4 py-2 text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={deleteSnapshot}
+                className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
+              >
+                🗑️ Delete Snapshot
               </button>
             </div>
           </div>
