@@ -86,6 +86,11 @@ interface MortgageResults {
   standardSchedule: AmortizationPayment[];
   yearsReduced: number;
   interestSaved: number;
+  interestSavedVsBaseline?: number | null;
+  interestSavedAtOriginalTerm?: number | null;
+  baselineTotalInterest?: number | null;
+  baselineTotalPaid?: number | null;
+  baselineScheduleLength?: number | null;
   actualPayoffYear: number;
   calculatedTermInYears: number;
   calculatedTermInMonths: number;
@@ -218,7 +223,12 @@ export default function MortgageCalculator() {
       standardRemainingBalanceAtOriginalTerm: raw.standardRemainingBalanceAtOriginalTerm ?? null,
       baselineRemainingBalanceAtOriginalTerm: raw.baselineRemainingBalanceAtOriginalTerm ?? null,
       totalPaid,
-      standardTotalPaid
+      standardTotalPaid,
+      interestSavedVsBaseline: typeof raw.interestSavedVsBaseline === 'number' ? raw.interestSavedVsBaseline : null,
+      interestSavedAtOriginalTerm: typeof raw.interestSavedAtOriginalTerm === 'number' ? raw.interestSavedAtOriginalTerm : null,
+      baselineTotalInterest: typeof raw.baselineTotalInterest === 'number' ? raw.baselineTotalInterest : null,
+      baselineTotalPaid: typeof raw.baselineTotalPaid === 'number' ? raw.baselineTotalPaid : null,
+      baselineScheduleLength: typeof raw.baselineScheduleLength === 'number' ? raw.baselineScheduleLength : null
     } as MortgageResults;
   };
 
@@ -568,6 +578,17 @@ export default function MortgageCalculator() {
     }
 
     return schedule;
+  };
+
+  const getInterestPaidUpToTerm = (schedule: AmortizationPayment[], targetMonths: number): number => {
+    if (!Array.isArray(schedule) || targetMonths <= 0) {
+      return 0;
+    }
+
+    const clampedMonths = Math.min(targetMonths, schedule.length);
+    return roundToPrecision(
+      schedule.slice(0, clampedMonths).reduce((sum, payment) => sum + payment.interestPayment, 0)
+    );
   };
 
   const getRemainingBalanceAtTerm = (schedule: AmortizationPayment[], targetMonths: number): number => {
@@ -993,7 +1014,16 @@ export default function MortgageCalculator() {
       []
     );
 
-    
+    const baselineTotalInterest = roundToPrecision(
+      baselineSchedule.reduce((sum, payment) => sum + payment.interestPayment, 0),
+      2
+    );
+    const baselineTotalPaid = roundToPrecision(
+      baselineSchedule.reduce((sum, payment) => sum + payment.paymentAmount, 0),
+      2
+    );
+    const baselineScheduleLength = baselineSchedule.length;
+
     // Generate schedule with extra payments
     const schedule = generateScheduleFromPayment(
       loanAmount, 
@@ -1009,6 +1039,7 @@ export default function MortgageCalculator() {
     
     const totalInterest = schedule.reduce((sum, payment) => sum + payment.interestPayment, 0);
     const interestSaved = standardTotalInterest - totalInterest;
+    const interestSavedVsBaseline = baselineTotalInterest - totalInterest;
     const actualPayoffYear = Math.ceil(schedule.length / 12);
     const standardPayoffYear = Math.ceil(standardSchedule.length / 12);
     
@@ -1045,6 +1076,19 @@ export default function MortgageCalculator() {
       ? getRemainingBalanceAtTerm(standardSchedule, originalTermMonths)
       : null;
 
+    const interestPaidAtOriginalTerm = originalTermMonths > 0
+      ? getInterestPaidUpToTerm(schedule, originalTermMonths)
+      : null;
+
+    const standardInterestPaidAtOriginalTerm = originalTermMonths > 0
+      ? getInterestPaidUpToTerm(standardSchedule, originalTermMonths)
+      : null;
+
+    const interestSavedAtOriginalTerm =
+      interestPaidAtOriginalTerm !== null && standardInterestPaidAtOriginalTerm !== null
+        ? roundToPrecision(standardInterestPaidAtOriginalTerm - interestPaidAtOriginalTerm)
+        : null;
+
     // Calculate individual lump sum impacts
     const lumpSumImpacts = calculateIndividualLumpSumImpacts(
       loanAmount,
@@ -1066,6 +1110,11 @@ export default function MortgageCalculator() {
       standardSchedule,
       yearsReduced,
       interestSaved,
+      interestSavedVsBaseline,
+      interestSavedAtOriginalTerm,
+      baselineTotalInterest,
+      baselineTotalPaid,
+      baselineScheduleLength,
       actualPayoffYear,
       calculatedTermInYears: termCalculation.years,
       calculatedTermInMonths: termCalculation.months,
@@ -1698,7 +1747,7 @@ export default function MortgageCalculator() {
                 </a>
               </div>
             ) : (
-              <div className="space-y-2">
+              <div className="space-y-3">
                 <div className="flex gap-2">
                   {results && (
                     <button
@@ -1933,8 +1982,23 @@ export default function MortgageCalculator() {
                           <span>Total Impact:</span>
                           <div className="text-right">
                             <div className="text-green-600">
-                              Interest saved ${results.interestSaved.toLocaleString()}
+                              Lifetime interest saved ${results.interestSaved.toLocaleString()}
                             </div>
+                            {typeof results.interestSavedAtOriginalTerm === 'number' && (
+                              <div className="text-green-600">
+                                Interest saved by original term ${results.interestSavedAtOriginalTerm.toLocaleString()}
+                              </div>
+                            )}
+                            {balanceDifferenceVsStandard !== null && (
+                              <div className="text-green-600">
+                                Balance reduced at original term ${balanceDifferenceVsStandard.toLocaleString()}
+                              </div>
+                            )}
+                            {typeof results.interestSavedVsBaseline === 'number' && (
+                              <div className="text-green-600 text-xs">
+                                Vs. constant rate (lifetime): ${results.interestSavedVsBaseline.toLocaleString()}
+                              </div>
+                            )}
                             <div className="text-xs text-gray-500">
                               Total extra paid ${sortedLumpSums.reduce((sum, lump) => sum + lump.amount, 0).toLocaleString()}
                             </div>
@@ -1947,13 +2011,14 @@ export default function MortgageCalculator() {
                     </div>
                   </div>
                 )}
-                <div className="grid grid-cols-2 gap-4 text-sm">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
                   <div>
                     <div className="font-medium text-gray-700 mb-2">Standard Mortgage:</div>
                     <div className="space-y-1">
                       <div>Payoff time: {formatYearsAndMonths(results.standardSchedule.length / 12)}</div>
                       <div>Total interest: ${(results.standardSchedule.reduce((sum, p) => sum + p.interestPayment, 0)).toLocaleString()}</div>
-                      <div>Total paid: ${results.standardTotalPaid.toLocaleString()}</div>\n                      <div className="text-xs text-gray-500">Payments: {results.standardSchedule.length}</div>
+                      <div>Total paid: ${results.standardTotalPaid.toLocaleString()}</div>
+                      <div className="text-xs text-gray-500">Payments: {results.standardSchedule.length}</div>
                     </div>
                   </div>
                   <div>
@@ -1961,15 +2026,42 @@ export default function MortgageCalculator() {
                     <div className="space-y-1">
                       <div className="text-green-600">Payoff time: {formatYearsAndMonths(results.schedule.length / 12)}</div>
                       <div className="text-green-600">Total interest: ${results.totalInterest.toLocaleString()}</div>
-                      <div className="text-green-600">Total paid: ${results.totalPaid.toLocaleString()}</div>\n                      <div className="text-xs text-gray-500">Payments: {results.schedule.length}</div>
+                      <div className="text-green-600">Total paid: ${results.totalPaid.toLocaleString()}</div>
+                      <div className="text-xs text-gray-500">Payments: {results.schedule.length}</div>
                     </div>
                   </div>
+                  {typeof results.baselineTotalInterest === 'number' && typeof results.baselineTotalPaid === 'number' && typeof results.baselineScheduleLength === 'number' && (
+                    <div>
+                      <div className="font-medium text-gray-700 mb-2">Constant Rate (No Extras):</div>
+                      <div className="space-y-1">
+                        <div>Payoff time: {formatYearsAndMonths((results.baselineScheduleLength || 0) / 12)}</div>
+                        <div>Total interest: ${results.baselineTotalInterest.toLocaleString()}</div>
+                        <div>Total paid: ${results.baselineTotalPaid.toLocaleString()}</div>
+                        <div className="text-xs text-gray-500">Payments: {results.baselineScheduleLength}</div>
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div className="mt-3 pt-3 border-t border-green-300">
                   <div className="text-center">
                     <span className="text-lg font-bold text-green-600">
-                      You&apos;ll save ${results.interestSaved.toLocaleString()} in interest and pay off your mortgage {formatYearsAndMonths(results.yearsReduced)} early!
+                      Lifetime savings: ${results.interestSaved.toLocaleString()} in interest with an early payoff of {formatYearsAndMonths(results.yearsReduced)}.
                     </span>
+                    {typeof results.interestSavedAtOriginalTerm === 'number' && (
+                      <span className="block text-sm text-green-700 mt-1">
+                        Interest saved by original term: ${results.interestSavedAtOriginalTerm.toLocaleString()}.
+                      </span>
+                    )}
+                    {balanceDifferenceVsStandard !== null && (
+                      <span className="block text-sm text-green-700">
+                        Balance reduced at original term: ${balanceDifferenceVsStandard.toLocaleString()}.
+                      </span>
+                    )}
+                    {typeof results.interestSavedVsBaseline === 'number' && (
+                      <span className="block text-xs text-green-700 mt-1">
+                        Without rate changes, the lifetime interest savings would be ${results.interestSavedVsBaseline.toLocaleString()}.
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -2037,7 +2129,7 @@ export default function MortgageCalculator() {
 
               {scheduleView === 'yearly' && (
                 <div className="bg-white p-4 rounded-lg border border-gray-300 max-h-64 overflow-y-auto">
-                  <div className="space-y-2">
+                  <div className="space-y-3">
                     {getYearlySummary(results.schedule).map((yearData) => (
                       <div key={yearData.year} className="flex justify-between items-center text-sm border-b border-gray-200 pb-2">
                         <div>
@@ -2273,21 +2365,21 @@ export default function MortgageCalculator() {
             
             {/* Summary Stats Row */}
             <div className="mt-6 bg-white rounded-lg shadow-md p-4">
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 text-center">
-                <div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8 lg:gap-14 xl:gap-20 text-center">
+                <div className="space-y-3">
                   <div className="text-xl font-bold text-gray-900">${results.totalInterest.toLocaleString()}</div>
                   <div className="text-sm text-gray-600">Total Interest</div>
                 </div>
-                <div>
+                <div className="space-y-3">
                   <div className="text-xl font-bold text-gray-900">${results.totalPaid.toLocaleString()}</div>
                   <div className="text-sm text-gray-600">Total Paid (Current Plan)</div>
                   <div className="text-xs text-gray-500">Standard plan ${results.standardTotalPaid.toLocaleString()}</div>
                 </div>
-                <div>
+                <div className="space-y-3">
                   <div className="text-xl font-bold text-green-600">${results.interestSaved.toLocaleString()}</div>
                   <div className="text-sm text-gray-600">Interest Saved</div>
                 </div>
-                <div>
+                <div className="space-y-3">
                   <div className="text-xl font-bold text-blue-600">{inputs.lumpSumPayments.length}</div>
                   <div className="text-sm text-gray-600">Lump Sum Payments</div>
                 </div>
@@ -2456,8 +2548,6 @@ export default function MortgageCalculator() {
     </div>
   );
 }
-
-
 
 
 
