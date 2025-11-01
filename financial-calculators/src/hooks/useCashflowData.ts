@@ -3,12 +3,51 @@
 import { useState, useEffect } from 'react';
 import { useSession } from 'next-auth/react';
 
-export function useCashflowData() {
+interface Investment {
+  id: string | number;
+  type: string;
+  amount: number;
+  month: number;
+  year: number;
+  description: string;
+  isRecurring: boolean;
+  created_at?: string;
+  user_id?: number;
+}
+
+interface Expense {
+  id: string | number;
+  category: string;
+  description: string;
+  amount: number;
+  month: number;
+  year: number;
+  isRecurring?: boolean;
+  created_at?: string;
+  user_id?: number;
+}
+
+interface UseCashflowDataReturn {
+  investments: Investment[];
+  expenses: Expense[];
+  loading: boolean;
+  error: string | null;
+  isAuthenticated: boolean;
+  addInvestment: (investment: Omit<Investment, 'id' | 'created_at' | 'user_id'>) => Promise<Investment>;
+  updateInvestment: (id: string | number, investment: Omit<Investment, 'id' | 'created_at' | 'user_id'>) => Promise<Investment>;
+  deleteInvestment: (id: string | number) => Promise<void>;
+  addExpense: (expense: Omit<Expense, 'id' | 'created_at' | 'user_id'>) => Promise<Expense>;
+  updateExpense: (id: string | number, expense: Omit<Expense, 'id' | 'created_at' | 'user_id'>) => Promise<Expense>;
+  deleteExpense: (id: string | number) => Promise<void>;
+  refetch: () => void;
+}
+
+export function useCashflowData(): UseCashflowDataReturn {
   const { data: session, status } = useSession();
-  const [investments, setInvestments] = useState([]);
-  const [expenses, setExpenses] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [investments, setInvestments] = useState<Investment[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Load data based on authentication status
   useEffect(() => {
@@ -21,7 +60,7 @@ export function useCashflowData() {
     }
   }, [session, status]);
 
-  const loadUserData = async () => {
+  const loadUserData = async (): Promise<void> => {
     try {
       setLoading(true);
       setError(null);
@@ -43,14 +82,15 @@ export function useCashflowData() {
       setInvestments(investmentsData);
       setExpenses(expensesData);
     } catch (err) {
-      setError(err.message);
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      setError(errorMessage);
       console.error('Error loading user data:', err);
     } finally {
       setLoading(false);
     }
   };
 
-  const loadLocalStorageData = () => {
+  const loadLocalStorageData = (): void => {
     try {
       setLoading(true);
       setError(null);
@@ -72,7 +112,7 @@ export function useCashflowData() {
     }
   };
 
-  const addInvestment = async (investment) => {
+  const addInvestment = async (investment: Omit<Investment, 'id' | 'created_at' | 'user_id'>): Promise<Investment> => {
     try {
       if (session?.user) {
         // Database mode
@@ -91,7 +131,7 @@ export function useCashflowData() {
         return newInvestment;
       } else {
         // localStorage mode
-        const newInvestment = { 
+        const newInvestment: Investment = { 
           ...investment, 
           id: Date.now().toString(),
           created_at: new Date().toISOString()
@@ -103,12 +143,13 @@ export function useCashflowData() {
         return newInvestment;
       }
     } catch (err) {
-      setError(err.message);
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      setError(errorMessage);
       throw err;
     }
   };
 
-  const updateInvestment = async (id, investment) => {
+  const updateInvestment = async (id: string | number, investment: Omit<Investment, 'id' | 'created_at' | 'user_id'>): Promise<Investment> => {
     try {
       if (session?.user) {
         // Database mode
@@ -127,21 +168,23 @@ export function useCashflowData() {
         return updatedInvestment;
       } else {
         // localStorage mode
+        const updatedInvestment: Investment = { ...investment, id: id.toString() };
         const updatedInvestments = investments.map(inv => 
-          inv.id === id ? { ...investment, id } : inv
+          inv.id === id ? updatedInvestment : inv
         );
         
         setInvestments(updatedInvestments);
         localStorage.setItem('cashflowTracker_investments', JSON.stringify(updatedInvestments));
-        return { ...investment, id };
+        return updatedInvestment;
       }
     } catch (err) {
-      setError(err.message);
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      setError(errorMessage);
       throw err;
     }
   };
 
-  const deleteInvestment = async (id) => {
+  const deleteInvestment = async (id: string | number): Promise<void> => {
     try {
       if (session?.user) {
         // Database mode
@@ -161,12 +204,13 @@ export function useCashflowData() {
         localStorage.setItem('cashflowTracker_investments', JSON.stringify(updatedInvestments));
       }
     } catch (err) {
-      setError(err.message);
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      setError(errorMessage);
       throw err;
     }
   };
 
-  const addExpense = async (expense) => {
+  const addExpense = async (expense: Omit<Expense, 'id' | 'created_at' | 'user_id'>): Promise<Expense> => {
     try {
       if (session?.user) {
         // Database mode
@@ -185,7 +229,7 @@ export function useCashflowData() {
         return newExpense;
       } else {
         // localStorage mode
-        const newExpense = { 
+        const newExpense: Expense = { 
           ...expense, 
           id: Date.now().toString(),
           created_at: new Date().toISOString()
@@ -197,12 +241,13 @@ export function useCashflowData() {
         return newExpense;
       }
     } catch (err) {
-      setError(err.message);
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      setError(errorMessage);
       throw err;
     }
   };
 
-  const updateExpense = async (id, expense) => {
+  const updateExpense = async (id: string | number, expense: Omit<Expense, 'id' | 'created_at' | 'user_id'>): Promise<Expense> => {
     try {
       if (session?.user) {
         // Database mode
@@ -221,21 +266,23 @@ export function useCashflowData() {
         return updatedExpense;
       } else {
         // localStorage mode
+        const updatedExpense: Expense = { ...expense, id: id.toString() };
         const updatedExpenses = expenses.map(exp => 
-          exp.id === id ? { ...expense, id } : exp
+          exp.id === id ? updatedExpense : exp
         );
         
         setExpenses(updatedExpenses);
         localStorage.setItem('cashflowTracker_expenses', JSON.stringify(updatedExpenses));
-        return { ...expense, id };
+        return updatedExpense;
       }
     } catch (err) {
-      setError(err.message);
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      setError(errorMessage);
       throw err;
     }
   };
 
-  const deleteExpense = async (id) => {
+  const deleteExpense = async (id: string | number): Promise<void> => {
     try {
       if (session?.user) {
         // Database mode
@@ -255,7 +302,8 @@ export function useCashflowData() {
         localStorage.setItem('cashflowTracker_expenses', JSON.stringify(updatedExpenses));
       }
     } catch (err) {
-      setError(err.message);
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      setError(errorMessage);
       throw err;
     }
   };

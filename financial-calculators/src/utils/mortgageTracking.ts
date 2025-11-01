@@ -1,4 +1,4 @@
-import { MortgageSnapshot, MortgagePayment, MortgageSettings } from '@/lib/database';
+import { MortgageSnapshot, MortgagePayment, MortgageSettings, RateAdjustmentDB } from '@/lib/database';
 
 export interface PrepaymentImpact {
   interestSaved: number;
@@ -94,18 +94,20 @@ export function calculatePrepaymentImpact(
 export function buildMortgageHistory(
   snapshots: MortgageSnapshot[],
   payments: MortgagePayment[],
-  settings: MortgageSettings | null
+  settings: MortgageSettings | null,
+  rateAdjustments: RateAdjustmentDB[] = []
 ): MortgageHistoryPoint[] {
   const history: MortgageHistoryPoint[] = [];
   
   // Combine and sort all events by date
   const allEvents: Array<{
     date: string;
-    type: 'snapshot' | 'payment';
-    data: MortgageSnapshot | MortgagePayment;
+    type: 'snapshot' | 'payment' | 'rate_adjustment';
+    data: MortgageSnapshot | MortgagePayment | RateAdjustmentDB;
   }> = [
     ...snapshots.map(s => ({ date: s.snapshotDate, type: 'snapshot' as const, data: s })),
-    ...payments.map(p => ({ date: p.paymentDate, type: 'payment' as const, data: p }))
+    ...payments.map(p => ({ date: p.paymentDate, type: 'payment' as const, data: p })),
+    ...rateAdjustments.map((adjustment) => ({ date: adjustment.effectiveDate, type: 'rate_adjustment' as const, data: adjustment }))
   ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   
   // Build chronological history
@@ -118,22 +120,46 @@ export function buildMortgageHistory(
         monthlyPayment: snapshot.monthlyPayment,
         interestRate: snapshot.interestRate
       });
-    } else {
+    } else if (event.type === 'payment') {
       const payment = event.data as MortgagePayment;
-      // Find the most recent snapshot for context
       const recentSnapshot = snapshots
         .filter(s => new Date(s.snapshotDate) <= new Date(payment.paymentDate))
         .sort((a, b) => new Date(b.snapshotDate).getTime() - new Date(a.snapshotDate).getTime())[0];
-      
+      const previousPoint = history.length > 0 ? history[history.length - 1] : undefined;
+
       history.push({
         date: payment.paymentDate,
         balance: payment.remainingBalance,
-        monthlyPayment: recentSnapshot?.monthlyPayment || 0,
-        interestRate: recentSnapshot?.interestRate || 0,
+        monthlyPayment: recentSnapshot?.monthlyPayment ?? previousPoint?.monthlyPayment ?? payment.scheduledAmount,
+        interestRate: recentSnapshot?.interestRate ?? previousPoint?.interestRate ?? 0,
         event: {
           type: payment.paymentType === 'lump_sum' ? 'lump_sum' : 'payment',
           amount: payment.actualAmount || payment.scheduledAmount,
           description: payment.description
+        }
+      });
+    } else {
+      const adjustment = event.data as RateAdjustmentDB;
+      const adjustmentDate = new Date(adjustment.effectiveDate);
+      const recentSnapshot = snapshots
+        .filter(s => new Date(s.snapshotDate) <= adjustmentDate)
+        .sort((a, b) => new Date(b.snapshotDate).getTime() - new Date(a.snapshotDate).getTime())[0];
+      const previousPoint = history.length > 0 ? history[history.length - 1] : undefined;
+
+      const referenceBalance = recentSnapshot?.remainingBalance ?? previousPoint?.balance ?? 0;
+      const referencePayment = recentSnapshot?.monthlyPayment ?? previousPoint?.monthlyPayment ?? 0;
+      const priorRate = previousPoint?.interestRate ?? recentSnapshot?.interestRate ?? 0;
+      const updatedRate = priorRate + adjustment.rateDelta;
+
+      history.push({
+        date: adjustment.effectiveDate,
+        balance: referenceBalance,
+        monthlyPayment: referencePayment,
+        interestRate: updatedRate,
+        event: {
+          type: 'rate_change',
+          amount: adjustment.rateDelta,
+          description: adjustment.description
         }
       });
     }

@@ -48,6 +48,19 @@ db.exec(`
     FOREIGN KEY (mortgageCalculationId) REFERENCES mortgage_calculations (id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS rate_adjustments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mortgageCalculationId INTEGER NOT NULL,
+    effectiveDate DATE NOT NULL,
+    rateDelta REAL NOT NULL,
+    description TEXT,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (mortgageCalculationId) REFERENCES mortgage_calculations (id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_rate_adjustments_calc ON rate_adjustments (mortgageCalculationId);
+
   -- New tables for mortgage tracking
   CREATE TABLE IF NOT EXISTS mortgage_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -260,6 +273,59 @@ try {
   // Column already exists or other error, ignore
 }
 
+try {
+  // Add mortgageTermMonths to mortgage_calculations table
+  db.exec(`ALTER TABLE mortgage_calculations ADD COLUMN mortgageTermMonths INTEGER DEFAULT 60`);
+} catch (e) {
+  // Column already exists or other error, ignore
+}
+
+// Add cashflow tracking tables
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS user_investments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      type TEXT NOT NULL,
+      amount REAL NOT NULL,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      description TEXT DEFAULT '',
+      is_recurring BOOLEAN DEFAULT FALSE,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS user_expenses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      category TEXT NOT NULL,
+      description TEXT NOT NULL,
+      amount REAL NOT NULL,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS resp_scenarios (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      scenario_data TEXT NOT NULL,
+      is_default BOOLEAN DEFAULT FALSE,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_user_investments_user ON user_investments (user_id);
+    CREATE INDEX IF NOT EXISTS idx_user_expenses_user ON user_expenses (user_id);
+    CREATE INDEX IF NOT EXISTS idx_resp_scenarios_user ON resp_scenarios (user_id);
+  `);
+} catch (e) {
+  console.log('Cashflow tables already exist or migration error:', e);
+}
+
 // User management
 export interface User {
   id: number;
@@ -309,6 +375,7 @@ export interface MortgageCalculation {
   mortgageStartDate?: string;
   paymentDayOfMonth?: number;
   preferredPaymentDay?: number;
+  mortgageTermMonths?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -323,14 +390,15 @@ export interface CreateMortgageCalculationParams {
   mortgageStartDate?: string;
   paymentDayOfMonth?: number;
   preferredPaymentDay?: number;
+  mortgageTermMonths?: number;
 }
 
 export function createMortgageCalculation(params: CreateMortgageCalculationParams): MortgageCalculation {
   const stmt = db.prepare(`
     INSERT INTO mortgage_calculations 
     (userId, mortgageAmount, annualRate, monthlyPayment, extraMonthlyPayment, calculationName, 
-     mortgageStartDate, paymentDayOfMonth, preferredPaymentDay)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     mortgageStartDate, paymentDayOfMonth, preferredPaymentDay, mortgageTermMonths)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   
   const result = stmt.run(
@@ -342,7 +410,8 @@ export function createMortgageCalculation(params: CreateMortgageCalculationParam
     params.calculationName,
     params.mortgageStartDate,
     params.paymentDayOfMonth,
-    params.preferredPaymentDay
+    params.preferredPaymentDay,
+    params.mortgageTermMonths
   );
   
   return getMortgageCalculationById(result.lastInsertRowid as number)!;
@@ -462,6 +531,84 @@ export function updateLumpSumPayment(id: number, params: Partial<CreateLumpSumPa
 
 export function deleteLumpSumPayment(id: number): boolean {
   const stmt = db.prepare('DELETE FROM lump_sum_payments WHERE id = ?');
+  const result = stmt.run(id);
+  return result.changes > 0;
+}
+
+
+// Rate adjustment management
+export interface RateAdjustmentDB {
+  id: number;
+  mortgageCalculationId: number;
+  effectiveDate: string;
+  rateDelta: number;
+  description?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateRateAdjustmentParams {
+  mortgageCalculationId: number;
+  effectiveDate: string;
+  rateDelta: number;
+  description?: string;
+}
+
+export function createRateAdjustment(params: CreateRateAdjustmentParams): RateAdjustmentDB {
+  const stmt = db.prepare(`
+    INSERT INTO rate_adjustments 
+    (mortgageCalculationId, effectiveDate, rateDelta, description)
+    VALUES (?, ?, ?, ?)
+  `);
+
+  const result = stmt.run(
+    params.mortgageCalculationId,
+    params.effectiveDate,
+    params.rateDelta,
+    params.description ?? null
+  );
+
+  return getRateAdjustmentById(result.lastInsertRowid as number)!;
+}
+
+export function getRateAdjustmentById(id: number): RateAdjustmentDB | null {
+  const stmt = db.prepare('SELECT * FROM rate_adjustments WHERE id = ?');
+  const result = stmt.get(id) as RateAdjustmentDB | undefined;
+  return result || null;
+}
+
+export function getRateAdjustmentsByCalculationId(calculationId: number): RateAdjustmentDB[] {
+  const stmt = db.prepare('SELECT * FROM rate_adjustments WHERE mortgageCalculationId = ? ORDER BY effectiveDate');
+  const results = stmt.all(calculationId) as RateAdjustmentDB[];
+  return results;
+}
+
+export function updateRateAdjustment(id: number, params: Partial<CreateRateAdjustmentParams>): RateAdjustmentDB | null {
+  const updates: string[] = [];
+  const values: (string | number | null)[] = [];
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) {
+      updates.push(`${key} = ?`);
+      values.push(value as string | number | null);
+    }
+  }
+
+  if (updates.length === 0) {
+    return getRateAdjustmentById(id);
+  }
+
+  updates.push('updatedAt = CURRENT_TIMESTAMP');
+  values.push(id);
+
+  const stmt = db.prepare(`UPDATE rate_adjustments SET ${updates.join(', ')} WHERE id = ?`);
+  stmt.run(...values);
+
+  return getRateAdjustmentById(id);
+}
+
+export function deleteRateAdjustment(id: number): boolean {
+  const stmt = db.prepare('DELETE FROM rate_adjustments WHERE id = ?');
   const result = stmt.run(id);
   return result.changes > 0;
 }
@@ -1136,5 +1283,282 @@ export function deleteAssetSnapshot(id: number): boolean {
 
 // Type alias for API compatibility
 export type AssetSnapshotData = CreateAssetSnapshotParams;
+
+// Cashflow Management Interfaces and Functions
+export interface UserInvestment {
+  id: number;
+  user_id: number;
+  type: string;
+  amount: number;
+  month: number;
+  year: number;
+  description: string;
+  is_recurring: boolean;
+  created_at: string;
+}
+
+export interface UserExpense {
+  id: number;
+  user_id: number;
+  category: string;
+  description: string;
+  amount: number;
+  month: number;
+  year: number;
+  created_at: string;
+}
+
+export interface RespScenario {
+  id: number;
+  user_id: number;
+  name: string;
+  scenario_data: string;
+  is_default: boolean;
+  created_at: string;
+}
+
+export interface CreateInvestmentParams {
+  user_id: number;
+  type: string;
+  amount: number;
+  month: number;
+  year: number;
+  description?: string;
+  is_recurring?: boolean;
+}
+
+export interface CreateExpenseParams {
+  user_id: number;
+  category: string;
+  description: string;
+  amount: number;
+  month: number;
+  year: number;
+}
+
+export interface CreateRespScenarioParams {
+  user_id: number;
+  name: string;
+  scenario_data: string;
+  is_default?: boolean;
+}
+
+// Investment Functions
+export function createUserInvestment(params: CreateInvestmentParams): UserInvestment {
+  const stmt = db.prepare(`
+    INSERT INTO user_investments (user_id, type, amount, month, year, description, is_recurring)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  
+  const result = stmt.run(
+    params.user_id,
+    params.type,
+    params.amount,
+    params.month,
+    params.year,
+    params.description || '',
+    params.is_recurring ? 1 : 0
+  );
+  
+  return getUserInvestmentById(result.lastInsertRowid as number)!;
+}
+
+export function getUserInvestmentById(id: number): UserInvestment | null {
+  const stmt = db.prepare('SELECT * FROM user_investments WHERE id = ?');
+  return stmt.get(id) as UserInvestment | null;
+}
+
+export function getUserInvestmentsByUserId(userId: number): UserInvestment[] {
+  const stmt = db.prepare(`
+    SELECT id, user_id, type, amount, month, year, description, 
+           is_recurring, created_at 
+    FROM user_investments 
+    WHERE user_id = ? 
+    ORDER BY year, month
+  `);
+  return stmt.all(userId) as UserInvestment[];
+}
+
+export function updateUserInvestment(id: number, userId: number, data: Partial<CreateInvestmentParams>): boolean {
+  const updates: string[] = [];
+  const values: (string | number)[] = [];
+  
+  if (data.type !== undefined) {
+    updates.push('type = ?');
+    values.push(data.type);
+  }
+  if (data.amount !== undefined) {
+    updates.push('amount = ?');
+    values.push(data.amount);
+  }
+  if (data.month !== undefined) {
+    updates.push('month = ?');
+    values.push(data.month);
+  }
+  if (data.year !== undefined) {
+    updates.push('year = ?');
+    values.push(data.year);
+  }
+  if (data.description !== undefined) {
+    updates.push('description = ?');
+    values.push(data.description);
+  }
+  if (data.is_recurring !== undefined) {
+    updates.push('is_recurring = ?');
+    values.push(data.is_recurring ? 1 : 0);
+  }
+  
+  if (updates.length === 0) return false;
+  
+  values.push(id, userId);
+  
+  const stmt = db.prepare(`UPDATE user_investments SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`);
+  const result = stmt.run(...values);
+  return result.changes > 0;
+}
+
+export function deleteUserInvestment(id: number, userId: number): boolean {
+  const stmt = db.prepare('DELETE FROM user_investments WHERE id = ? AND user_id = ?');
+  const result = stmt.run(id, userId);
+  return result.changes > 0;
+}
+
+// Expense Functions
+export function createUserExpense(params: CreateExpenseParams): UserExpense {
+  const stmt = db.prepare(`
+    INSERT INTO user_expenses (user_id, category, description, amount, month, year)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  
+  const result = stmt.run(
+    params.user_id,
+    params.category,
+    params.description,
+    params.amount,
+    params.month,
+    params.year
+  );
+  
+  return getUserExpenseById(result.lastInsertRowid as number)!;
+}
+
+export function getUserExpenseById(id: number): UserExpense | null {
+  const stmt = db.prepare('SELECT * FROM user_expenses WHERE id = ?');
+  return stmt.get(id) as UserExpense | null;
+}
+
+export function getUserExpensesByUserId(userId: number): UserExpense[] {
+  const stmt = db.prepare(`
+    SELECT id, user_id, category, description, amount, month, year, created_at
+    FROM user_expenses 
+    WHERE user_id = ? 
+    ORDER BY year, month
+  `);
+  return stmt.all(userId) as UserExpense[];
+}
+
+export function updateUserExpense(id: number, userId: number, data: Partial<CreateExpenseParams>): boolean {
+  const updates: string[] = [];
+  const values: (string | number)[] = [];
+  
+  if (data.category !== undefined) {
+    updates.push('category = ?');
+    values.push(data.category);
+  }
+  if (data.description !== undefined) {
+    updates.push('description = ?');
+    values.push(data.description);
+  }
+  if (data.amount !== undefined) {
+    updates.push('amount = ?');
+    values.push(data.amount);
+  }
+  if (data.month !== undefined) {
+    updates.push('month = ?');
+    values.push(data.month);
+  }
+  if (data.year !== undefined) {
+    updates.push('year = ?');
+    values.push(data.year);
+  }
+  
+  if (updates.length === 0) return false;
+  
+  values.push(id, userId);
+  
+  const stmt = db.prepare(`UPDATE user_expenses SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`);
+  const result = stmt.run(...values);
+  return result.changes > 0;
+}
+
+export function deleteUserExpense(id: number, userId: number): boolean {
+  const stmt = db.prepare('DELETE FROM user_expenses WHERE id = ? AND user_id = ?');
+  const result = stmt.run(id, userId);
+  return result.changes > 0;
+}
+
+// RESP Scenario Functions
+export function createRespScenario(params: CreateRespScenarioParams): RespScenario {
+  const stmt = db.prepare(`
+    INSERT INTO resp_scenarios (user_id, name, scenario_data, is_default)
+    VALUES (?, ?, ?, ?)
+  `);
+  
+  const result = stmt.run(
+    params.user_id,
+    params.name,
+    params.scenario_data,
+    params.is_default ? 1 : 0
+  );
+  
+  return getRespScenarioById(result.lastInsertRowid as number)!;
+}
+
+export function getRespScenarioById(id: number): RespScenario | null {
+  const stmt = db.prepare('SELECT * FROM resp_scenarios WHERE id = ?');
+  return stmt.get(id) as RespScenario | null;
+}
+
+export function getRespScenariosByUserId(userId: number): RespScenario[] {
+  const stmt = db.prepare(`
+    SELECT id, user_id, name, scenario_data, is_default, created_at
+    FROM resp_scenarios 
+    WHERE user_id = ? 
+    ORDER BY is_default DESC, created_at DESC
+  `);
+  return stmt.all(userId) as RespScenario[];
+}
+
+export function updateRespScenario(id: number, userId: number, data: Partial<CreateRespScenarioParams>): boolean {
+  const updates: string[] = [];
+  const values: (string | number)[] = [];
+  
+  if (data.name !== undefined) {
+    updates.push('name = ?');
+    values.push(data.name);
+  }
+  if (data.scenario_data !== undefined) {
+    updates.push('scenario_data = ?');
+    values.push(data.scenario_data);
+  }
+  if (data.is_default !== undefined) {
+    updates.push('is_default = ?');
+    values.push(data.is_default ? 1 : 0);
+  }
+  
+  if (updates.length === 0) return false;
+  
+  values.push(id, userId);
+  
+  const stmt = db.prepare(`UPDATE resp_scenarios SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`);
+  const result = stmt.run(...values);
+  return result.changes > 0;
+}
+
+export function deleteRespScenario(id: number, userId: number): boolean {
+  const stmt = db.prepare('DELETE FROM resp_scenarios WHERE id = ? AND user_id = ?');
+  const result = stmt.run(id, userId);
+  return result.changes > 0;
+}
 
 export default db;

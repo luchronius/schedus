@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useSession } from 'next-auth/react';
 import { useMortgageData, MortgageData } from '@/hooks/useMortgageData';
+import { monthsToTermParts, normalizeTermParts, termPartsToMonths } from '@/utils/mortgageTerm';
 import {
   calculateMonthlyPayment,
   generateAmortizationSchedule,
@@ -11,11 +12,39 @@ import {
   validateFinancialInput
 } from '../utils/financialCalculations';
 
+const RATE_ADJUSTMENT_OPTIONS = [
+  -1.5, -1.25, -1.0, -0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5
+].map((value) => ({
+  value,
+  label: `${value > 0 ? '+' : ''}${value.toFixed(2)}%`
+}));
+const DEFAULT_TERM_YEARS = 25;
+const DEFAULT_TERM_ADDITIONAL_MONTHS = 0;
+const DEFAULT_TERM_TOTAL_MONTHS = termPartsToMonths(DEFAULT_TERM_YEARS, DEFAULT_TERM_ADDITIONAL_MONTHS);
+const MAX_TERM_YEARS = 50;
+
+interface RateAdjustment {
+  id: string;
+  effectiveDate: string; // ISO date string for when the rate changes
+  rateDelta: number; // Percent change applied to the base annual rate
+  description?: string;
+}
+
+interface RateAdjustmentImpact {
+  interestWithAdjustments: number;
+  interestWithoutAdjustments: number;
+  interestDifference: number;
+  termWithAdjustments: number; // months
+  termWithoutAdjustments: number; // months
+  termDifferenceMonths: number;
+}
+
 interface LumpSumPayment {
   id: string;
   amount: number;
   plannedDate?: string; // ISO date string for precise scheduling
   actualDate?: string; // ISO date string for when actually paid
+  actualPaidDate?: string; // Legacy compatibility field
   year: number; // Keep for backward compatibility
   month: number; // Keep for backward compatibility
   description?: string;
@@ -32,7 +61,10 @@ interface MortgageInputs {
   mortgageStartDate: string; // ISO date string for mortgage origination
   paymentDayOfMonth: number; // 1-28 for safe monthly payment day
   preferredPaymentDay?: number; // 29-31 for month-end preferences
+  mortgageTermYears: number;
+  mortgageTermAdditionalMonths: number;
   lumpSumPayments: LumpSumPayment[];
+  rateAdjustments: RateAdjustment[];
 }
 
 interface LumpSumImpact {
@@ -47,7 +79,8 @@ interface MortgageResults {
   loanAmount: number;
   monthlyPrincipalInterest: number;
   totalMonthlyPayment: number;
-  totalPayments: number;
+  totalPaid: number;
+  standardTotalPaid: number;
   totalInterest: number;
   schedule: AmortizationPayment[];
   standardSchedule: AmortizationPayment[];
@@ -57,6 +90,10 @@ interface MortgageResults {
   calculatedTermInYears: number;
   calculatedTermInMonths: number;
   lumpSumImpacts: LumpSumImpact[];
+  remainingBalanceAtOriginalTerm: number | null;
+  standardRemainingBalanceAtOriginalTerm: number | null;
+  baselineRemainingBalanceAtOriginalTerm: number | null;
+  rateAdjustmentImpact?: RateAdjustmentImpact;
 }
 
 export default function MortgageCalculator() {
@@ -70,45 +107,135 @@ export default function MortgageCalculator() {
     markLumpSumAsPaid 
   } = useMortgageData();
   
-  // Get initial state from localStorage or use defaults
-  const getInitialInputs = (): MortgageInputs => {
-    const defaults = {
-      mortgageAmount: 842952.60,
-      annualRate: 4.04,
-      monthlyPayment: 4624.05,
-      extraMonthlyPayment: 0,
-      mortgageStartDate: new Date().toISOString().split('T')[0], // Default to today
-      paymentDayOfMonth: 12, // Default to 12th of month to match example
-      preferredPaymentDay: undefined,
-      lumpSumPayments: []
+  // Build default inputs and normalize stored mortgage data
+  const buildDefaultInputs = (): MortgageInputs => ({
+    mortgageAmount: 842952.60,
+    annualRate: 4.04,
+    monthlyPayment: 4624.05,
+    extraMonthlyPayment: 0,
+    mortgageStartDate: new Date().toISOString().split('T')[0], // Default to today
+    paymentDayOfMonth: 12, // Default to 12th of month to match example
+    preferredPaymentDay: undefined,
+    mortgageTermYears: DEFAULT_TERM_YEARS,
+    mortgageTermAdditionalMonths: DEFAULT_TERM_ADDITIONAL_MONTHS,
+    lumpSumPayments: [] as LumpSumPayment[],
+    rateAdjustments: [] as RateAdjustment[]
+  });
+
+  const normalizeInputs = (
+    raw?: Partial<MortgageInputs> & { mortgageTermMonths?: number }
+  ): MortgageInputs => {
+    const defaults = buildDefaultInputs();
+
+    if (!raw || typeof raw !== 'object') {
+      return defaults;
+    }
+
+    const merged = {
+      ...defaults,
+      ...raw,
+      lumpSumPayments: Array.isArray(raw.lumpSumPayments) ? raw.lumpSumPayments : defaults.lumpSumPayments,
+      rateAdjustments: Array.isArray(raw.rateAdjustments) ? raw.rateAdjustments : defaults.rateAdjustments
     };
 
+    let termParts = normalizeTermParts(
+      merged.mortgageTermYears,
+      merged.mortgageTermAdditionalMonths
+    );
+
+    if (raw.mortgageTermMonths !== undefined && raw.mortgageTermMonths !== null) {
+      const fromTotal = monthsToTermParts(raw.mortgageTermMonths);
+      if (fromTotal.years !== 0 || fromTotal.months !== 0) {
+        termParts = fromTotal;
+      }
+    }
+
+    if (termParts.years === 0 && termParts.months === 0) {
+      termParts = {
+        years: defaults.mortgageTermYears,
+        months: defaults.mortgageTermAdditionalMonths
+      };
+    }
+
+    let normalizedYears = Math.min(MAX_TERM_YEARS, Math.max(0, termParts.years));
+    let normalizedMonths = Math.max(0, termParts.months % 12);
+
+    if (termParts.years > MAX_TERM_YEARS) {
+      normalizedMonths = 0;
+    }
+
+
+    return {
+      ...merged,
+      mortgageAmount: isNaN(Number(merged.mortgageAmount)) ? defaults.mortgageAmount : Number(merged.mortgageAmount),
+      annualRate: isNaN(Number(merged.annualRate)) ? defaults.annualRate : Number(merged.annualRate),
+      monthlyPayment: isNaN(Number(merged.monthlyPayment)) ? defaults.monthlyPayment : Number(merged.monthlyPayment),
+      extraMonthlyPayment: isNaN(Number(merged.extraMonthlyPayment)) ? defaults.extraMonthlyPayment : Number(merged.extraMonthlyPayment),
+      mortgageStartDate: merged.mortgageStartDate || defaults.mortgageStartDate,
+      paymentDayOfMonth: isNaN(Number(merged.paymentDayOfMonth)) ? defaults.paymentDayOfMonth : Number(merged.paymentDayOfMonth),
+      preferredPaymentDay: merged.preferredPaymentDay !== undefined && merged.preferredPaymentDay !== null && !isNaN(Number(merged.preferredPaymentDay))
+        ? Number(merged.preferredPaymentDay)
+        : undefined,
+      mortgageTermYears: normalizedYears,
+      mortgageTermAdditionalMonths: normalizedMonths,
+    };
+  };
+
+  const normalizeStoredResults = (raw: any): MortgageResults | null => {
+    if (!raw || typeof raw !== 'object') {
+      return null;
+    }
+
+    const schedule = Array.isArray(raw.schedule) ? raw.schedule : [];
+    const standardSchedule = Array.isArray(raw.standardSchedule) ? raw.standardSchedule : [];
+
+    const totalPaid = typeof raw.totalPaid === 'number'
+      ? raw.totalPaid
+      : roundToPrecision(
+          schedule.reduce((sum: number, payment: any) => {
+            const amount = typeof payment?.paymentAmount === 'number' ? payment.paymentAmount : 0;
+            return sum + amount;
+          }, 0),
+          2
+        );
+
+    const standardTotalPaid = typeof raw.standardTotalPaid === 'number'
+      ? raw.standardTotalPaid
+      : roundToPrecision(
+          standardSchedule.reduce((sum: number, payment: any) => {
+            const amount = typeof payment?.paymentAmount === 'number' ? payment.paymentAmount : 0;
+            return sum + amount;
+          }, 0),
+          2
+        );
+
+    return {
+      ...raw,
+      schedule,
+      standardSchedule,
+      lumpSumImpacts: Array.isArray(raw.lumpSumImpacts) ? raw.lumpSumImpacts : [],
+      remainingBalanceAtOriginalTerm: raw.remainingBalanceAtOriginalTerm ?? null,
+      standardRemainingBalanceAtOriginalTerm: raw.standardRemainingBalanceAtOriginalTerm ?? null,
+      baselineRemainingBalanceAtOriginalTerm: raw.baselineRemainingBalanceAtOriginalTerm ?? null,
+      totalPaid,
+      standardTotalPaid
+    } as MortgageResults;
+  };
+
+
+  const getInitialInputs = (): MortgageInputs => {
     if (typeof window !== 'undefined' && session?.user?.id) {
       const stored = localStorage.getItem(`mortgage-inputs-${session.user.id}`);
       if (stored) {
         try {
-          const parsed = JSON.parse(stored);
-          // Ensure all required fields are defined, merge with defaults
-          return {
-            ...defaults,
-            ...parsed,
-            // Ensure these fields are never undefined and are valid
-            mortgageAmount: isNaN(Number(parsed.mortgageAmount)) ? defaults.mortgageAmount : Number(parsed.mortgageAmount),
-            annualRate: isNaN(Number(parsed.annualRate)) ? defaults.annualRate : Number(parsed.annualRate),
-            monthlyPayment: isNaN(Number(parsed.monthlyPayment)) ? defaults.monthlyPayment : Number(parsed.monthlyPayment),
-            extraMonthlyPayment: isNaN(Number(parsed.extraMonthlyPayment)) ? defaults.extraMonthlyPayment : Number(parsed.extraMonthlyPayment),
-            mortgageStartDate: parsed.mortgageStartDate || defaults.mortgageStartDate,
-            paymentDayOfMonth: isNaN(Number(parsed.paymentDayOfMonth)) ? defaults.paymentDayOfMonth : Number(parsed.paymentDayOfMonth),
-            preferredPaymentDay: parsed.preferredPaymentDay && !isNaN(Number(parsed.preferredPaymentDay)) ? Number(parsed.preferredPaymentDay) : undefined,
-          };
+          return normalizeInputs(JSON.parse(stored));
         } catch (error) {
           console.error('Error parsing stored mortgage inputs:', error);
         }
       }
     }
-    return defaults;
+    return buildDefaultInputs();
   };
-
   // State declarations
   const [inputs, setInputs] = useState<MortgageInputs>(getInitialInputs);
 
@@ -118,7 +245,7 @@ export default function MortgageCalculator() {
       const stored = localStorage.getItem(`mortgage-results-${session.user.id}`);
       if (stored) {
         try {
-          return JSON.parse(stored);
+          return normalizeStoredResults(JSON.parse(stored));
         } catch (error) {
           console.error('Error parsing stored mortgage results:', error);
         }
@@ -135,6 +262,58 @@ export default function MortgageCalculator() {
   const [showHistorical, setShowHistorical] = useState(false);
   const [needsRecalculation, setNeedsRecalculation] = useState(false);
   const isInitialLoad = useRef(true);
+
+  const deriveLumpSumSortValue = (lump: LumpSumPayment): number => {
+    if (lump.plannedDate) {
+      const parsed = Date.parse(lump.plannedDate);
+      if (!Number.isNaN(parsed)) {
+        return parsed;
+      }
+    }
+
+    const startDate = inputs.mortgageStartDate ? new Date(inputs.mortgageStartDate) : null;
+    if (startDate && !Number.isNaN(startDate.getTime())) {
+      const normalizedMonth = Math.max(0, (lump.month ?? 1) - 1);
+      const totalMonthsFromStart = Math.max(0, (lump.year ?? 0) * 12 + normalizedMonth);
+      const derivedDate = new Date(startDate);
+      derivedDate.setMonth(derivedDate.getMonth() + totalMonthsFromStart);
+      const derivedTime = derivedDate.getTime();
+      const indexOffset = inputs.lumpSumPayments.findIndex(item => item.id === lump.id);
+      return derivedTime + (indexOffset >= 0 ? indexOffset / 1000 : 0);
+    }
+
+    const fallbackMonths = Math.max(0, (lump.year ?? 0) * 12 + Math.max(0, (lump.month ?? 1) - 1));
+    const fallbackIndex = inputs.lumpSumPayments.findIndex(item => item.id === lump.id);
+    return fallbackMonths + (fallbackIndex >= 0 ? fallbackIndex / 1000 : 0);
+  };
+
+  const formatLumpSumScheduleLabel = (lump: LumpSumPayment): string => {
+    if (lump.plannedDate) {
+      const parsed = new Date(lump.plannedDate);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed.toLocaleDateString();
+      }
+    }
+
+    if (lump.year === 0) {
+      return 'Immediate';
+    }
+
+    const parts: string[] = [];
+    if (lump.year) {
+      parts.push(`Year ${lump.year}`);
+    }
+    if (lump.month) {
+      parts.push(`Month ${lump.month}`);
+    }
+    return parts.length > 0 ? parts.join(', ') : 'Scheduled';
+  };
+
+  const sortedLumpSums = useMemo(
+    () =>
+      [...inputs.lumpSumPayments].sort((a, b) => deriveLumpSumSortValue(a) - deriveLumpSumSortValue(b)),
+    [inputs.lumpSumPayments, inputs.mortgageStartDate]
+  );
 
   // Debug session state - removed for production
 
@@ -156,7 +335,7 @@ export default function MortgageCalculator() {
       if (storedResults) {
         try {
           const parsedResults = JSON.parse(storedResults);
-          setResults(parsedResults);
+          setResults(normalizeStoredResults(parsedResults));
         } catch (error) {
           console.error('Error parsing stored mortgage results:', error);
         }
@@ -192,7 +371,7 @@ export default function MortgageCalculator() {
     if (results && !isInitialLoad.current) {
       setNeedsRecalculation(true);
     }
-  }, [inputs.lumpSumPayments, inputs.extraMonthlyPayment]);
+  }, [inputs.lumpSumPayments, inputs.extraMonthlyPayment, inputs.rateAdjustments]);
   
   // Helper function to calculate payment number from exact date
   const calculatePaymentNumberFromDate = (mortgageStartDate: string, lumpSumDate: string, paymentDayOfMonth: number, preferredPaymentDay?: number): number => {
@@ -296,27 +475,60 @@ export default function MortgageCalculator() {
     lumpSumPayments: LumpSumPayment[] = [],
     mortgageStartDate?: string,
     paymentDayOfMonth?: number,
-    preferredPaymentDay?: number
+    preferredPaymentDay?: number,
+    rateAdjustments: RateAdjustment[] = []
   ): AmortizationPayment[] => {
-    const monthlyRate = annualRate / 12;
     const totalPayment = monthlyPayment + extraMonthlyPayment;
-    
+
+    const adjustmentSchedule = (rateAdjustments || [])
+      .map((adjustment) => {
+        const rateDelta = (adjustment.rateDelta || 0) / 100;
+
+        if (adjustment.effectiveDate && mortgageStartDate && paymentDayOfMonth) {
+          const paymentNumber = calculatePaymentNumberFromDate(
+            mortgageStartDate,
+            adjustment.effectiveDate,
+            paymentDayOfMonth,
+            preferredPaymentDay
+          );
+          return { paymentNumber: Math.max(1, paymentNumber), rateDelta };
+        }
+
+        return { paymentNumber: 1, rateDelta };
+      })
+      .sort((a, b) => a.paymentNumber - b.paymentNumber);
+
     const schedule: AmortizationPayment[] = [];
     let remainingBalance = principal;
     let paymentNumber = 1;
-    
+    let cumulativeRateDelta = 0;
+    let adjustmentIndex = 0;
+
     while (remainingBalance > 0.01 && paymentNumber <= 1200) { // Safety limit of 100 years
+      while (
+        adjustmentIndex < adjustmentSchedule.length &&
+        paymentNumber >= adjustmentSchedule[adjustmentIndex].paymentNumber
+      ) {
+        cumulativeRateDelta += adjustmentSchedule[adjustmentIndex].rateDelta;
+        adjustmentIndex++;
+      }
+
+      const effectiveAnnualRate = Math.max(0, annualRate + cumulativeRateDelta);
+      const monthlyRate = effectiveAnnualRate / 12;
+
       const interestPayment = remainingBalance * monthlyRate;
       let principalPayment = totalPayment - interestPayment;
-      
-      // Apply lump sum payments if it's the right payment number
+
+      if (principalPayment < 0) {
+        principalPayment = 0;
+      }
+
       let totalLumpSumThisPayment = 0;
-      
+
       for (const lumpSum of lumpSumPayments) {
         let targetPaymentNumber: number;
-        
+
         if (lumpSum.plannedDate && mortgageStartDate && paymentDayOfMonth) {
-          // Use exact date calculation
           targetPaymentNumber = calculatePaymentNumberFromDate(
             mortgageStartDate,
             lumpSum.plannedDate,
@@ -324,26 +536,24 @@ export default function MortgageCalculator() {
             preferredPaymentDay
           );
         } else {
-          // Fallback to old year/month calculation for backward compatibility
           targetPaymentNumber = lumpSum.year === 0 ? 1 : ((lumpSum.year - 1) * 12) + lumpSum.month;
         }
-        
+
         if (paymentNumber === targetPaymentNumber) {
           totalLumpSumThisPayment += lumpSum.amount;
         }
       }
-      
+
       principalPayment += totalLumpSumThisPayment;
-      
-      // Don't pay more than remaining balance
+
       if (principalPayment > remainingBalance) {
         principalPayment = remainingBalance;
       }
-      
+
       remainingBalance -= principalPayment;
-      
+
       const totalPaymentAmount = interestPayment + principalPayment;
-      
+
       schedule.push({
         paymentNumber,
         paymentAmount: roundToPrecision(totalPaymentAmount),
@@ -351,15 +561,33 @@ export default function MortgageCalculator() {
         interestPayment: roundToPrecision(interestPayment),
         remainingBalance: roundToPrecision(Math.max(0, remainingBalance))
       });
-      
+
       paymentNumber++;
-      
+
       if (remainingBalance <= 0.01) break;
     }
-    
+
     return schedule;
   };
 
+  const getRemainingBalanceAtTerm = (schedule: AmortizationPayment[], targetMonths: number): number => {
+    if (!Array.isArray(schedule) || targetMonths <= 0) {
+      return 0;
+    }
+
+    if (schedule.length === 0) {
+      return 0;
+    }
+
+    if (schedule.length < targetMonths) {
+      return 0;
+    }
+
+    const paymentIndex = Math.min(targetMonths, schedule.length) - 1;
+    const payment = schedule[paymentIndex];
+
+    return payment ? Math.max(0, roundToPrecision(payment.remainingBalance)) : 0;
+  };
   const addLumpSumPayment = () => {
     // Calculate a default planned date (1 year from mortgage start)
     const startDate = new Date(inputs.mortgageStartDate || new Date().toISOString().split('T')[0]);
@@ -415,6 +643,47 @@ export default function MortgageCalculator() {
     }));
   };
 
+  const addRateAdjustment = () => {
+    const startDate = new Date(inputs.mortgageStartDate || new Date().toISOString().split('T')[0]);
+    const defaultEffectiveDate = new Date(startDate);
+    defaultEffectiveDate.setFullYear(startDate.getFullYear() + 1);
+
+    const newAdjustment: RateAdjustment = {
+      id: `rate-${Date.now()}`,
+      effectiveDate: defaultEffectiveDate.toISOString().split('T')[0],
+      rateDelta: 0,
+      description: ''
+    };
+
+    setInputs(prev => ({
+      ...prev,
+      rateAdjustments: [...prev.rateAdjustments, newAdjustment]
+    }));
+  };
+
+  const removeRateAdjustment = (id: string) => {
+    setInputs(prev => ({
+      ...prev,
+      rateAdjustments: prev.rateAdjustments.filter(adjustment => adjustment.id !== id)
+    }));
+  };
+
+  const updateRateAdjustment = (id: string, field: 'effectiveDate' | 'rateDelta' | 'description', value: string | number) => {
+    setInputs(prev => ({
+      ...prev,
+      rateAdjustments: prev.rateAdjustments.map(adjustment => {
+        if (adjustment.id === id) {
+          if (field === 'rateDelta') {
+            const numericValue = typeof value === 'number' ? value : Number(value);
+            return { ...adjustment, rateDelta: isNaN(numericValue) ? 0 : numericValue };
+          }
+          return { ...adjustment, [field]: value as string };
+        }
+        return adjustment;
+      })
+    }));
+  };
+
   const handleSaveCalculation = async () => {
     if (!isAuthenticated) {
       alert('Please sign in to save your calculation');
@@ -426,7 +695,12 @@ export default function MortgageCalculator() {
       return;
     }
 
-    const calculationData = {
+    const totalOriginalTermMonths = termPartsToMonths(
+      inputs.mortgageTermYears,
+      inputs.mortgageTermAdditionalMonths
+    );
+
+    const calculationData: MortgageData = {
       // Core mortgage values
       mortgageAmount: inputs.mortgageAmount,
       annualRate: inputs.annualRate,
@@ -438,7 +712,14 @@ export default function MortgageCalculator() {
       mortgageStartDate: inputs.mortgageStartDate,
       paymentDayOfMonth: inputs.paymentDayOfMonth,
       preferredPaymentDay: inputs.preferredPaymentDay,
+      mortgageTermMonths: totalOriginalTermMonths,
       
+      rateAdjustments: inputs.rateAdjustments.map((adjustment) => ({
+        effectiveDate: adjustment.effectiveDate,
+        rateDelta: adjustment.rateDelta,
+        description: adjustment.description?.trim() ? adjustment.description.trim() : undefined
+      })),
+
       // Lump sum payments with enhanced date information
       lumpSumPayments: inputs.lumpSumPayments.map((lumpSum, index) => {
         const impact = results.lumpSumImpacts.find(imp => imp.lumpSumId === lumpSum.id);
@@ -466,18 +747,41 @@ export default function MortgageCalculator() {
   };
 
   const loadHistoricalCalculation = (calculation: MortgageData) => {
+    const savedTermParts = monthsToTermParts(calculation.mortgageTermMonths ?? DEFAULT_TERM_TOTAL_MONTHS);
+    let termYears = savedTermParts.years;
+    let termMonths = savedTermParts.months;
+
+    if (termYears === 0 && termMonths === 0) {
+      termYears = DEFAULT_TERM_YEARS;
+      termMonths = DEFAULT_TERM_ADDITIONAL_MONTHS;
+    }
+
+    if (termYears > MAX_TERM_YEARS) {
+      termYears = MAX_TERM_YEARS;
+      termMonths = 0;
+    }
+
     setInputs({
       // Core mortgage values
       mortgageAmount: calculation.mortgageAmount,
       annualRate: calculation.annualRate,
       monthlyPayment: calculation.monthlyPayment,
       extraMonthlyPayment: calculation.extraMonthlyPayment,
-      
+
       // Load ALL date-based settings
       mortgageStartDate: calculation.mortgageStartDate || new Date().toISOString().split('T')[0],
       paymentDayOfMonth: calculation.paymentDayOfMonth || 12,
       preferredPaymentDay: calculation.preferredPaymentDay,
-      
+      mortgageTermYears: termYears,
+      mortgageTermAdditionalMonths: termMonths,
+
+      rateAdjustments: (calculation.rateAdjustments || []).map((adjustment, index: number) => ({
+        id: `${Date.now()}-rate-${index}`,
+        effectiveDate: adjustment.effectiveDate,
+        rateDelta: adjustment.rateDelta,
+        description: adjustment.description || ''
+      })),
+
       // Load lump sum payments with enhanced date information
       lumpSumPayments: calculation.lumpSumPayments.map((lump, index: number) => ({
         id: `${Date.now()}-${index}`,
@@ -503,27 +807,30 @@ export default function MortgageCalculator() {
     monthlyPayment: number,
     annualRate: number,
     extraMonthlyPayment: number,
-    lumpSumPayments: LumpSumPayment[]
+    lumpSumPayments: LumpSumPayment[],
+    rateAdjustments: RateAdjustment[]
   ): LumpSumImpact[] => {
     const impacts: LumpSumImpact[] = [];
+    const sortedLumps = [...lumpSumPayments].sort((a, b) => deriveLumpSumSortValue(a) - deriveLumpSumSortValue(b));
+    
     
     // Generate baseline schedule (without any lump sums)
-    const baselineSchedule = generateScheduleFromPayment(principal, monthlyPayment, annualRate, extraMonthlyPayment, [], inputs.mortgageStartDate, inputs.paymentDayOfMonth, inputs.preferredPaymentDay);
+    const baselineSchedule = generateScheduleFromPayment(principal, monthlyPayment, annualRate, extraMonthlyPayment, [], inputs.mortgageStartDate, inputs.paymentDayOfMonth, inputs.preferredPaymentDay, rateAdjustments);
     const baselineInterest = baselineSchedule.reduce((sum, payment) => sum + payment.interestPayment, 0);
     
     // Calculate cumulative impact by adding lump sums one by one
-    for (let i = 0; i < lumpSumPayments.length; i++) {
-      const currentLumpSums = lumpSumPayments.slice(0, i + 1);
-      const scheduleWithLumpSums = generateScheduleFromPayment(principal, monthlyPayment, annualRate, extraMonthlyPayment, currentLumpSums, inputs.mortgageStartDate, inputs.paymentDayOfMonth, inputs.preferredPaymentDay);
+    for (let i = 0; i < sortedLumps.length; i++) {
+      const currentLumpSums = sortedLumps.slice(0, i + 1);
+      const scheduleWithLumpSums = generateScheduleFromPayment(principal, monthlyPayment, annualRate, extraMonthlyPayment, currentLumpSums, inputs.mortgageStartDate, inputs.paymentDayOfMonth, inputs.preferredPaymentDay, rateAdjustments);
       const totalInterestWithLumpSums = scheduleWithLumpSums.reduce((sum, payment) => sum + payment.interestPayment, 0);
       
       // Calculate the marginal impact of this specific lump sum
-      const previousLumpSums = lumpSumPayments.slice(0, i);
-      const scheduleWithoutThisLump = generateScheduleFromPayment(principal, monthlyPayment, annualRate, extraMonthlyPayment, previousLumpSums, inputs.mortgageStartDate, inputs.paymentDayOfMonth, inputs.preferredPaymentDay);
+      const previousLumpSums = sortedLumps.slice(0, i);
+      const scheduleWithoutThisLump = generateScheduleFromPayment(principal, monthlyPayment, annualRate, extraMonthlyPayment, previousLumpSums, inputs.mortgageStartDate, inputs.paymentDayOfMonth, inputs.preferredPaymentDay, rateAdjustments);
       const interestWithoutThisLump = scheduleWithoutThisLump.reduce((sum, payment) => sum + payment.interestPayment, 0);
       
       impacts.push({
-        lumpSumId: lumpSumPayments[i].id,
+        lumpSumId: sortedLumps[i].id,
         interestSaved: interestWithoutThisLump - totalInterestWithLumpSums,
         timeSaved: scheduleWithoutThisLump.length - scheduleWithLumpSums.length,
         principalReduction: lumpSumPayments[i].amount,
@@ -671,8 +978,21 @@ export default function MortgageCalculator() {
     }
     
     // Generate standard schedule (no extra payments)
-    const standardSchedule = generateScheduleFromPayment(loanAmount, monthlyPrincipalInterest, annualRateDecimal, 0, [], inputs.mortgageStartDate, inputs.paymentDayOfMonth, inputs.preferredPaymentDay);
+    const standardSchedule = generateScheduleFromPayment(loanAmount, monthlyPrincipalInterest, annualRateDecimal, 0, [], inputs.mortgageStartDate, inputs.paymentDayOfMonth, inputs.preferredPaymentDay, inputs.rateAdjustments);
     const standardTotalInterest = standardSchedule.reduce((sum, payment) => sum + payment.interestPayment, 0);
+
+    const baselineSchedule = generateScheduleFromPayment(
+      loanAmount,
+      monthlyPrincipalInterest,
+      annualRateDecimal,
+      0,
+      [],
+      inputs.mortgageStartDate,
+      inputs.paymentDayOfMonth,
+      inputs.preferredPaymentDay,
+      []
+    );
+
     
     // Generate schedule with extra payments
     const schedule = generateScheduleFromPayment(
@@ -680,10 +1000,11 @@ export default function MortgageCalculator() {
       monthlyPrincipalInterest,
       annualRateDecimal,
       inputs.extraMonthlyPayment,
-      inputs.lumpSumPayments,
+      sortedLumpSums,
       inputs.mortgageStartDate,
       inputs.paymentDayOfMonth,
-      inputs.preferredPaymentDay
+      inputs.preferredPaymentDay,
+      inputs.rateAdjustments
     );
     
     const totalInterest = schedule.reduce((sum, payment) => sum + payment.interestPayment, 0);
@@ -695,23 +1016,51 @@ export default function MortgageCalculator() {
     const paymentDifference = standardSchedule.length - schedule.length;
     const yearsReduced = paymentDifference / 12;
     
-    const totalPayments = monthlyPrincipalInterest * standardSchedule.length;
     const totalMonthlyPayment = inputs.monthlyPayment + inputs.extraMonthlyPayment;
+
+    const standardTotalPaid = roundToPrecision(
+      standardSchedule.reduce((sum, payment) => sum + payment.paymentAmount, 0),
+      2
+    );
+
+    const totalPaid = roundToPrecision(
+      schedule.reduce((sum, payment) => sum + payment.paymentAmount, 0),
+      2
+    );
     
+    const originalTermMonths = termPartsToMonths(
+      inputs.mortgageTermYears,
+      inputs.mortgageTermAdditionalMonths
+    );
+
+    const baselineRemainingBalanceAtOriginalTerm = originalTermMonths > 0
+      ? getRemainingBalanceAtTerm(baselineSchedule, originalTermMonths)
+      : null;
+
+    const remainingBalanceAtOriginalTerm = originalTermMonths > 0
+      ? getRemainingBalanceAtTerm(schedule, originalTermMonths)
+      : null;
+
+    const standardRemainingBalanceAtOriginalTerm = originalTermMonths > 0
+      ? getRemainingBalanceAtTerm(standardSchedule, originalTermMonths)
+      : null;
+
     // Calculate individual lump sum impacts
     const lumpSumImpacts = calculateIndividualLumpSumImpacts(
       loanAmount,
       monthlyPrincipalInterest,
       annualRateDecimal,
       inputs.extraMonthlyPayment,
-      inputs.lumpSumPayments
+      sortedLumpSums,
+      inputs.rateAdjustments
     );
 
     setResults({
       loanAmount,
       monthlyPrincipalInterest,
       totalMonthlyPayment,
-      totalPayments,
+      totalPaid,
+      standardTotalPaid,
       totalInterest,
       schedule,
       standardSchedule,
@@ -720,7 +1069,10 @@ export default function MortgageCalculator() {
       actualPayoffYear,
       calculatedTermInYears: termCalculation.years,
       calculatedTermInMonths: termCalculation.months,
-      lumpSumImpacts
+      lumpSumImpacts,
+      remainingBalanceAtOriginalTerm,
+      standardRemainingBalanceAtOriginalTerm,
+      baselineRemainingBalanceAtOriginalTerm
     });
   };
 
@@ -750,6 +1102,37 @@ export default function MortgageCalculator() {
     }
   };
 
+
+  const handleTermFieldChange = (
+    field: 'mortgageTermYears' | 'mortgageTermAdditionalMonths',
+    rawValue: string
+  ) => {
+    const numericValue = Number(rawValue);
+    const sanitizedValue = Number.isFinite(numericValue) ? Math.max(0, Math.floor(numericValue)) : 0;
+
+    setInputs(prev => {
+      const nextYears = field === 'mortgageTermYears'
+        ? Math.min(MAX_TERM_YEARS, sanitizedValue)
+        : prev.mortgageTermYears;
+      const nextMonthsRaw = field === 'mortgageTermAdditionalMonths'
+        ? sanitizedValue
+        : prev.mortgageTermAdditionalMonths;
+      let normalized = normalizeTermParts(nextYears, nextMonthsRaw);
+      if (normalized.years > MAX_TERM_YEARS) {
+        normalized = { years: MAX_TERM_YEARS, months: 0 };
+      }
+      return {
+        ...prev,
+        mortgageTermYears: normalized.years,
+        mortgageTermAdditionalMonths: normalized.months,
+      };
+    });
+
+    if (errors.mortgageTerm) {
+      setErrors(prev => ({ ...prev, mortgageTerm: '' }));
+    }
+  };
+
   const getYearlySummary = (schedule: AmortizationPayment[]) => {
     const yearlySummary = [];
     const paymentsPerYear = 12;
@@ -776,6 +1159,96 @@ export default function MortgageCalculator() {
     
     return yearlySummary;
   };
+
+  const renderRateAdjustmentImpact = () => {
+    if (!results?.rateAdjustmentImpact || inputs.rateAdjustments.length === 0) {
+      return null;
+    }
+
+    const {
+      interestWithAdjustments,
+      interestWithoutAdjustments,
+      interestDifference,
+      termWithAdjustments,
+      termWithoutAdjustments,
+      termDifferenceMonths
+    } = results.rateAdjustmentImpact;
+
+    const interestClass = interestDifference >= 0 ? 'text-green-600' : 'text-red-600';
+    const interestVerb = interestDifference >= 0 ? 'saved' : 'added';
+
+    const hasTermChange = Math.abs(termDifferenceMonths) > 0;
+    const termClass = termDifferenceMonths >= 0 ? 'text-green-600' : 'text-red-600';
+    const termVerb = termDifferenceMonths >= 0 ? 'sooner' : 'later';
+    const termDeltaLabel = hasTermChange ? formatYearsAndMonths(Math.abs(termDifferenceMonths) / 12) : 'No change';
+    const termPaymentsCount = Math.abs(termDifferenceMonths);
+    const termPaymentsLabel = hasTermChange
+      ? `${termPaymentsCount} ${termPaymentsCount === 1 ? 'payment' : 'payments'} ${termDifferenceMonths >= 0 ? 'fewer' : 'additional'}`
+      : 'Timeline unchanged';
+
+    return (
+      <div className="bg-blue-50 p-4 rounded-lg border border-blue-300">
+        <h4 className="text-lg font-semibold text-blue-800 mb-3">Rate Change Impact</h4>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+          <div className="bg-white border border-blue-200 rounded-md p-3">
+            <p className="text-xs text-gray-500 uppercase tracking-wide">Without rate changes</p>
+            <p className="text-base font-semibold text-gray-800">{'$' + interestWithoutAdjustments.toLocaleString()}</p>
+            <p className="text-xs text-gray-500">Total interest keeping the original rate</p>
+          </div>
+          <div className="bg-white border border-blue-200 rounded-md p-3">
+            <p className="text-xs text-gray-500 uppercase tracking-wide">With planned changes</p>
+            <p className="text-base font-semibold text-gray-800">{'$' + interestWithAdjustments.toLocaleString()}</p>
+            <p className="text-xs text-gray-500">Interest cost after applied rate changes</p>
+          </div>
+        </div>
+        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+          <div>
+            <p className="text-xs text-gray-500 uppercase tracking-wide">Interest impact</p>
+            <p className={`${interestClass} text-lg font-semibold`}>{'$' + Math.abs(interestDifference).toLocaleString()} {interestVerb}</p>
+            <p className="text-xs text-gray-500">Compared with leaving the rate unchanged</p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-500 uppercase tracking-wide">Timeline impact</p>
+            <p className={`${termClass} text-lg font-semibold`}>{hasTermChange ? `${termDeltaLabel} ${termVerb}` : 'No timeline change'}</p>
+            <p className="text-xs text-gray-500">{hasTermChange ? termPaymentsLabel : 'Timeline unchanged'}</p>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+
+  const originalTermMonths = termPartsToMonths(
+    inputs.mortgageTermYears,
+    inputs.mortgageTermAdditionalMonths
+  );
+  const originalTermLabel = originalTermMonths > 0
+    ? formatYearsAndMonths(originalTermMonths / 12)
+    : 'Not set';
+  const balanceAtOriginalTerm = results?.remainingBalanceAtOriginalTerm ?? null;
+  const standardBalanceAtOriginalTerm = results?.standardRemainingBalanceAtOriginalTerm ?? null;
+  const baselineBalanceAtOriginalTerm = results?.baselineRemainingBalanceAtOriginalTerm ?? null;
+  const scheduleLength = results?.schedule.length ?? Number.MAX_SAFE_INTEGER;
+  const standardScheduleLength = results?.standardSchedule.length ?? Number.MAX_SAFE_INTEGER;
+  const loanPaidOffBeforeOriginalTerm =
+    originalTermMonths > 0 &&
+    scheduleLength <= originalTermMonths &&
+    (results?.remainingBalanceAtOriginalTerm ?? 0) === 0;
+  const standardLoanPaidOffBeforeOriginalTerm =
+    originalTermMonths > 0 &&
+    standardScheduleLength <= originalTermMonths &&
+    (results?.standardRemainingBalanceAtOriginalTerm ?? 0) === 0;
+  const baselineLoanPaidOffBeforeOriginalTerm =
+    originalTermMonths > 0 &&
+    (baselineBalanceAtOriginalTerm ?? 0) === 0;
+  const balanceDifferenceVsStandard =
+    balanceAtOriginalTerm !== null && standardBalanceAtOriginalTerm !== null
+      ? standardBalanceAtOriginalTerm - balanceAtOriginalTerm
+      : null;
+  const balanceDifferenceVsBaseline =
+    balanceAtOriginalTerm !== null && baselineBalanceAtOriginalTerm !== null
+      ? baselineBalanceAtOriginalTerm - balanceAtOriginalTerm
+      : null;
 
   return (
     <div className="bg-white rounded-lg shadow-lg p-8">
@@ -918,6 +1391,44 @@ export default function MortgageCalculator() {
             </p>
           </div>
 
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Original Mortgage Term
+            </label>
+            <div className="flex gap-4">
+              <div className="flex-1">
+                <input
+                  type="number"
+                  value={inputs.mortgageTermYears}
+                  onChange={(e) => handleTermFieldChange('mortgageTermYears', e.target.value)}
+                  className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 ${errors.mortgageTerm ? 'border-red-300' : 'border-gray-300'}`}
+                  min="0"
+                  max={MAX_TERM_YEARS}
+                  step="1"
+                />
+                <p className="text-xs text-gray-500 mt-1">Years</p>
+              </div>
+              <div className="flex-1">
+                <input
+                  type="number"
+                  value={inputs.mortgageTermAdditionalMonths}
+                  onChange={(e) => handleTermFieldChange('mortgageTermAdditionalMonths', e.target.value)}
+                  className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 ${errors.mortgageTerm ? 'border-red-300' : 'border-gray-300'}`}
+                  min="0"
+                  max="11"
+                  step="1"
+                />
+                <p className="text-xs text-gray-500 mt-1">Months</p>
+              </div>
+            </div>
+            {errors.mortgageTerm && (
+              <p className="text-red-600 text-sm mt-1">{errors.mortgageTerm}</p>
+            )}
+            <p className="text-sm text-gray-600 mt-1">
+              Track your Canadian-style amortization to compare against the payoff timeline.
+            </p>
+          </div>
 
           <div className="border-t pt-4">
             <h4 className="text-lg font-semibold text-gray-700 mb-3">Extra Payments</h4>
@@ -1070,6 +1581,90 @@ export default function MortgageCalculator() {
                   </div>
                 )}
               </div>
+
+              <div>
+                <div className="flex justify-between items-center mb-3">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Rate Changes
+                  </label>
+                  <button
+                    type="button"
+                    onClick={addRateAdjustment}
+                    className="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 transition-colors"
+                  >
+                    + Add Rate Change
+                  </button>
+                </div>
+
+                {inputs.rateAdjustments.length === 0 ? (
+                  <p className="text-sm text-gray-500 italic">No rate changes added yet. Add one to explore adjustable scenarios.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {inputs.rateAdjustments.map((adjustment, index) => (
+                      <div key={adjustment.id} className="p-3 bg-gray-50 rounded-md border border-gray-200">
+                        <div className="flex items-start justify-between mb-2">
+                          <span className="text-sm font-medium text-gray-700">Rate Change #{index + 1}</span>
+                          <button
+                            type="button"
+                            onClick={() => removeRateAdjustment(adjustment.id)}
+                            className="text-red-600 hover:text-red-800 text-sm"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          <div>
+                            <label className="block text-xs font-medium text-gray-600 mb-1">
+                              Effective Date
+                            </label>
+                            <input
+                              type="date"
+                              value={adjustment.effectiveDate}
+                              onChange={(e) => updateRateAdjustment(adjustment.id, 'effectiveDate', e.target.value)}
+                              className="w-full px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                              min={inputs.mortgageStartDate}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-600 mb-1">
+                              Rate Change (%)
+                            </label>
+                            <input
+                              type="number"
+                              value={adjustment.rateDelta}
+                              onChange={(e) => updateRateAdjustment(adjustment.id, 'rateDelta', Number(e.target.value))}
+                              className="w-full px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                              step="0.05"
+                              min="-5"
+                              max="5"
+                              list={`rate-delta-options-${adjustment.id}`}
+                            />
+                            <datalist id={`rate-delta-options-${adjustment.id}`}>
+                              {RATE_ADJUSTMENT_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>{option.label}</option>
+                              ))}
+                            </datalist>
+                            <p className="text-xs text-gray-500 mt-1">Positive raises the rate, negative lowers it.</p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-600 mb-1">
+                              Notes (optional)
+                            </label>
+                            <input
+                              type="text"
+                              value={adjustment.description || ''}
+                              onChange={(e) => updateRateAdjustment(adjustment.id, 'description', e.target.value)}
+                              className="w-full px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                              placeholder="e.g., Renewal, ARM reset"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
             </div>
           </div>
 
@@ -1175,6 +1770,9 @@ export default function MortgageCalculator() {
                     ({results.standardSchedule.length} total payments)
                   </div>
                 </div>
+                <p className="text-sm text-blue-600 mt-3">
+                  Original amortization: {originalTermLabel}
+                </p>
               </div>
               <div className="bg-white p-4 rounded-lg border border-orange-300">
                 <div className="flex justify-between items-center mb-2">
@@ -1227,7 +1825,7 @@ export default function MortgageCalculator() {
                 <p className="text-xs text-gray-500">
                   Over {formatYearsAndMonths(results.schedule.length / 12)}
                 </p>
-                {(inputs.extraMonthlyPayment > 0 || inputs.lumpSumPayments.length > 0) && (
+                {(inputs.extraMonthlyPayment > 0 || sortedLumpSums.length > 0) && (
                   <div className="mt-2 pt-2 border-t border-red-200">
                     <p className="text-xs text-green-600">
                       Interest saved: ${results.interestSaved.toLocaleString()}
@@ -1238,41 +1836,92 @@ export default function MortgageCalculator() {
                   </div>
                 )}
               </div>
+              <div className="bg-white p-4 rounded-lg border border-teal-300">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-gray-700">Balance At Original Term</span>
+                  <span className="text-sm text-teal-700">{originalTermLabel}</span>
+                </div>
+                {originalTermMonths > 0 ? (
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm text-gray-600">With current plan</span>
+                      <span className="text-lg font-semibold text-teal-700">${Math.max(0, (balanceAtOriginalTerm ?? 0)).toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm text-gray-600">Standard schedule (rate changes, no prepayments)</span>
+                      <span className="font-medium text-gray-900">${Math.max(0, (standardBalanceAtOriginalTerm ?? 0)).toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm text-gray-600">Baseline (no rate changes, no prepayments)</span>
+                      <span className="font-medium text-gray-900">${Math.max(0, (baselineBalanceAtOriginalTerm ?? 0)).toLocaleString()}</span>
+                    </div>
+                    {balanceDifferenceVsStandard !== null && Math.abs(balanceDifferenceVsStandard) > 0.5 && (
+                      <p className={`text-xs ${balanceDifferenceVsStandard > 0 ? 'text-green-600' : 'text-orange-600'}`}>
+                        {balanceDifferenceVsStandard > 0
+                          ? `You reduce the balance by $${Math.abs(balanceDifferenceVsStandard).toLocaleString()} compared to the standard schedule.`
+                          : `You would owe $${Math.abs(balanceDifferenceVsStandard).toLocaleString()} more compared to the standard schedule.`}
+                      </p>
+                    )}
+                    {balanceDifferenceVsBaseline !== null && Math.abs(balanceDifferenceVsBaseline) > 0.5 && (
+                      <p className={`text-xs ${balanceDifferenceVsBaseline > 0 ? 'text-green-600' : 'text-orange-600'}`}>
+                        {balanceDifferenceVsBaseline > 0
+                          ? `You are ahead by $${Math.abs(balanceDifferenceVsBaseline).toLocaleString()} versus the no-prepayment/no-rate-change scenario.`
+                          : `You would owe $${Math.abs(balanceDifferenceVsBaseline).toLocaleString()} more than the no-prepayment/no-rate-change scenario.`}
+                      </p>
+                    )}
+                    {loanPaidOffBeforeOriginalTerm ? (
+                      <p className="text-xs text-green-600">You are scheduled to be mortgage-free before the original term ends.</p>
+                    ) : (
+                      <p className="text-xs text-gray-500">Any remaining balance at the original term would need to be renewed or paid in a lump sum.</p>
+                    )}
+                    {standardLoanPaidOffBeforeOriginalTerm && !loanPaidOffBeforeOriginalTerm && (
+                      <p className="text-xs text-purple-600">The standard schedule would finish before the original term.</p>
+                    )}
+                    {baselineLoanPaidOffBeforeOriginalTerm && !loanPaidOffBeforeOriginalTerm && (
+                      <p className="text-xs text-blue-600">Even without rate changes or prepayments, the mortgage would be paid off by the original term.</p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-500">Set an original mortgage term to see the projected balance.</p>
+                )}
+              </div>
             </div>
 
-            {(inputs.extraMonthlyPayment > 0 || inputs.lumpSumPayments.length > 0) && (
+            {renderRateAdjustmentImpact()}
+
+            {(inputs.extraMonthlyPayment > 0 || sortedLumpSums.length > 0) && (
               <div className="mt-6 p-4 bg-green-50 rounded-lg border border-green-200">
                 <h4 className="text-lg font-semibold text-green-800 mb-3">Extra Payment Impact</h4>
-                {inputs.lumpSumPayments.length > 0 && (
+                {sortedLumpSums.length > 0 && (
                   <div className="mb-4 p-3 bg-white rounded border border-green-300">
                     <h5 className="text-sm font-semibold text-green-700 mb-3">Individual Lump Sum Impact Analysis:</h5>
                     <div className="space-y-3">
-                      {inputs.lumpSumPayments.map((lumpSum, index) => {
+                      {sortedLumpSums.map((lumpSum, index) => {
                         const impact = results.lumpSumImpacts.find(imp => imp.lumpSumId === lumpSum.id);
+                        const scheduleLabel = formatLumpSumScheduleLabel(lumpSum);
                         return (
                           <div key={lumpSum.id} className="p-2 bg-gray-50 rounded border border-gray-200">
                             <div className="flex justify-between items-start mb-2">
                               <div>
                                 <div className="font-medium text-gray-800">
-                                  Payment #{index + 1} {lumpSum.description ? `- ${lumpSum.description}` : ''}
+                                  Extra payment on {scheduleLabel}{lumpSum.description ? ` - ${lumpSum.description}` : ''}
                                 </div>
                                 <div className="text-xs text-gray-600">
-                                  ${lumpSum.amount.toLocaleString()} • {lumpSum.year === 0 ? 
-                                    'Immediately' : 
-                                    `${new Date(2024, (lumpSum.month || 1) - 1).toLocaleString('default', { month: 'short' })} Year ${lumpSum.year}`
-                                  }
+                                  Amount: ${lumpSum.amount.toLocaleString()}
                                 </div>
                               </div>
                               <div className="text-right text-xs">
-                                {impact && (
+                                {impact ? (
                                   <>
                                     <div className="text-green-600 font-medium">
-                                      Saves ${impact.interestSaved.toLocaleString()}
+                                      Interest saved ${impact.interestSaved.toLocaleString()}
                                     </div>
                                     <div className="text-green-600">
                                       {Math.floor(impact.timeSaved / 12)}y {impact.timeSaved % 12}m saved
                                     </div>
                                   </>
+                                ) : (
+                                  <div className="text-gray-500">No savings calculated yet</div>
                                 )}
                               </div>
                             </div>
@@ -1284,7 +1933,10 @@ export default function MortgageCalculator() {
                           <span>Total Impact:</span>
                           <div className="text-right">
                             <div className="text-green-600">
-                              ${inputs.lumpSumPayments.reduce((sum, lump) => sum + lump.amount, 0).toLocaleString()} → Saves ${results.interestSaved.toLocaleString()}
+                              Interest saved ${results.interestSaved.toLocaleString()}
+                            </div>
+                            <div className="text-xs text-gray-500">
+                              Total extra paid ${sortedLumpSums.reduce((sum, lump) => sum + lump.amount, 0).toLocaleString()}
                             </div>
                             <div className="text-green-600 text-xs">
                               {formatYearsAndMonths(results.yearsReduced)} early payoff
@@ -1299,9 +1951,9 @@ export default function MortgageCalculator() {
                   <div>
                     <div className="font-medium text-gray-700 mb-2">Standard Mortgage:</div>
                     <div className="space-y-1">
-                      <div>Payoff time: {results.calculatedTermInYears} years, {results.calculatedTermInMonths} months</div>
+                      <div>Payoff time: {formatYearsAndMonths(results.standardSchedule.length / 12)}</div>
                       <div>Total interest: ${(results.standardSchedule.reduce((sum, p) => sum + p.interestPayment, 0)).toLocaleString()}</div>
-                      <div>Total payments: {results.standardSchedule.length}</div>
+                      <div>Total paid: ${results.standardTotalPaid.toLocaleString()}</div>\n                      <div className="text-xs text-gray-500">Payments: {results.standardSchedule.length}</div>
                     </div>
                   </div>
                   <div>
@@ -1309,7 +1961,7 @@ export default function MortgageCalculator() {
                     <div className="space-y-1">
                       <div className="text-green-600">Payoff time: {formatYearsAndMonths(results.schedule.length / 12)}</div>
                       <div className="text-green-600">Total interest: ${results.totalInterest.toLocaleString()}</div>
-                      <div className="text-green-600">Total payments: {results.schedule.length}</div>
+                      <div className="text-green-600">Total paid: ${results.totalPaid.toLocaleString()}</div>\n                      <div className="text-xs text-gray-500">Payments: {results.schedule.length}</div>
                     </div>
                   </div>
                 </div>
@@ -1433,7 +2085,7 @@ export default function MortgageCalculator() {
                 <li>• Your ${inputs.monthlyPayment.toLocaleString()} monthly payment will pay off the loan in {results.calculatedTermInYears} years, {results.calculatedTermInMonths} months</li>
                 <li>• Interest represents {((results.totalInterest / results.loanAmount) * 100).toFixed(1)}% of loan amount</li>
                 <li>• Principal & Interest portion: ${results.monthlyPrincipalInterest.toLocaleString()} of your monthly payment</li>
-                {(inputs.extraMonthlyPayment > 0 || inputs.lumpSumPayments.length > 0) && (
+                {(inputs.extraMonthlyPayment > 0 || sortedLumpSums.length > 0) && (
                   <li>• Extra payments will save you ${results.interestSaved.toLocaleString()} and {formatYearsAndMonths(results.yearsReduced)}</li>
                 )}
               </ul>
@@ -1532,6 +2184,14 @@ export default function MortgageCalculator() {
               const daysUntilPayment = Math.ceil((nextPaymentDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
               const principalPaid = inputs.mortgageAmount - currentBalance;
               const percentPaid = ((principalPaid / inputs.mortgageAmount) * 100);
+              const baseAnnualRate = inputs.annualRate;
+              const cumulativeRateAdjustment = (inputs.rateAdjustments || [])
+                .filter((adjustment) => adjustment.effectiveDate && !Number.isNaN(Date.parse(adjustment.effectiveDate)) && new Date(adjustment.effectiveDate) <= today)
+                .sort((a, b) => new Date(a.effectiveDate).getTime() - new Date(b.effectiveDate).getTime())
+                .reduce((sum, adjustment) => sum + adjustment.rateDelta, 0);
+              const effectiveAnnualRate = roundToPrecision(baseAnnualRate + cumulativeRateAdjustment, 3);
+              const effectiveRateDelta = effectiveAnnualRate - baseAnnualRate;
+              const showRateDelta = Math.abs(effectiveRateDelta) > 0.005;
               
               return (
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -1567,6 +2227,14 @@ export default function MortgageCalculator() {
                     <div className={`text-sm font-medium ${daysUntilPayment <= 7 ? 'text-red-600' : 'text-gray-600'}`}>
                       {daysUntilPayment > 0 ? `${daysUntilPayment} days remaining` : 'Due today!'}
                     </div>
+                    <div className="mt-3 text-sm text-gray-600">
+                      Effective rate: {effectiveAnnualRate.toFixed(2)}%
+                    </div>
+                    {showRateDelta && (
+                      <div className="text-xs text-gray-500">
+                        Base rate {baseAnnualRate.toFixed(2)}% {effectiveRateDelta > 0 ? "+" : ""}{effectiveRateDelta.toFixed(2)}% adjustments applied
+                      </div>
+                    )}
                     {inputs.extraMonthlyPayment > 0 && (
                       <div className="mt-2 text-xs text-orange-600">
                         + ${inputs.extraMonthlyPayment.toLocaleString()} extra payment
@@ -1611,8 +2279,9 @@ export default function MortgageCalculator() {
                   <div className="text-sm text-gray-600">Total Interest</div>
                 </div>
                 <div>
-                  <div className="text-xl font-bold text-gray-900">{results.totalPayments}</div>
-                  <div className="text-sm text-gray-600">Total Payments</div>
+                  <div className="text-xl font-bold text-gray-900">${results.totalPaid.toLocaleString()}</div>
+                  <div className="text-sm text-gray-600">Total Paid (Current Plan)</div>
+                  <div className="text-xs text-gray-500">Standard plan ${results.standardTotalPaid.toLocaleString()}</div>
                 </div>
                 <div>
                   <div className="text-xl font-bold text-green-600">${results.interestSaved.toLocaleString()}</div>
@@ -1708,7 +2377,7 @@ export default function MortgageCalculator() {
                       </button>
                     </div>
                     
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                    <div className="grid grid-cols-2 md:grid-cols-6 gap-4 text-sm">
                       <div>
                         <span className="text-gray-600">Loan Amount:</span>
                         <div className="font-medium">${calc.mortgageAmount.toLocaleString()}</div>
@@ -1724,6 +2393,14 @@ export default function MortgageCalculator() {
                       <div>
                         <span className="text-gray-600">Lump Sum Payments:</span>
                         <div className="font-medium">{calc.lumpSumPayments?.length || 0}</div>
+                      </div>
+                      <div>
+                        <span className="text-gray-600">Rate Changes:</span>
+                        <div className="font-medium">{calc.rateAdjustments?.length || 0}</div>
+                      </div>
+                      <div>
+                        <span className="text-gray-600">Original Term:</span>
+                        <div className="font-medium">{calc.mortgageTermMonths ? formatYearsAndMonths(calc.mortgageTermMonths / 12) : 'Not set'}</div>
                       </div>
                     </div>
                     
@@ -1748,6 +2425,27 @@ export default function MortgageCalculator() {
                         </div>
                       </div>
                     )}
+
+                    {calc.rateAdjustments && calc.rateAdjustments.length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-gray-200">
+                        <h5 className="text-sm font-medium text-gray-700 mb-2">Rate Change History:</h5>
+                        <div className="space-y-1">
+                          {calc.rateAdjustments.map((adjustment, index: number) => (
+                            <div key={index} className="flex justify-between items-center text-xs">
+                              <span>
+                                {new Date(adjustment.effectiveDate).toLocaleDateString()}
+                                {adjustment.description ? ` - ${adjustment.description}` : ''}
+                              </span>
+                              <span className={`px-2 py-1 rounded ${
+                                adjustment.rateDelta >= 0 ? 'bg-purple-100 text-purple-700' : 'bg-purple-50 text-purple-600'
+                              }`}>
+                                {adjustment.rateDelta >= 0 ? '+' : ''}{adjustment.rateDelta.toFixed(2)}%
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1758,3 +2456,16 @@ export default function MortgageCalculator() {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+

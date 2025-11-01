@@ -11,11 +11,11 @@ export default function NavigationHeader() {
   const { data: session, status } = useSession();
 
   const navItems = [
-    { href: '/', label: 'RESP Calculator', key: 'resp' },
     { href: '/compound-interest', label: 'Compound Interest', key: 'compound' },
     { href: '/loan-amortization', label: 'Loan Calculator', key: 'loan' },
-    { href: '/cashflow-tracker', label: 'Cashflow Tracker', key: 'cashflow' },
+    { href: '/', label: 'RESP Calculator', key: 'resp' },
     { href: '/mortgage', label: 'Mortgage Calculator', key: 'mortgage' },
+    { href: '/cashflow-tracker', label: 'Cashflow Tracker', key: 'cashflow' },
     { href: '/asset-tracker', label: 'Asset Tracker', key: 'assets' }
   ];
 

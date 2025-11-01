@@ -15,7 +15,7 @@ This is a comprehensive financial calculators suite built with Next.js 15, React
 
 ### Core Development
 ```bash
-cd resp-calculator
+cd financial-calculators
 npm run dev          # Start development server with Turbopack
 npm run build        # Build for production
 npm run start        # Start production server
@@ -46,21 +46,29 @@ npm test -- --testPathPatterns="components/__tests__"
 
 ### File Structure
 ```
-resp-calculator/src/
+financial-calculators/src/
 ├── app/                     # Next.js App Router
-│   ├── page.tsx            # RESP Calculator (home)
+│   ├── page.tsx            # Home page
+│   ├── api/                # API routes for data operations
 │   ├── daily-interest/     # Daily interest calculator route
 │   ├── compound-interest/  # Compound interest calculator route
 │   ├── loan-amortization/  # Loan amortization calculator route
-│   └── mortgage/           # Mortgage calculator route (legacy)
+│   └── mortgage/           # Mortgage calculator route
 ├── components/             # React components
-│   ├── RESPCalculator.tsx          # Main RESP calculator
+│   ├── RESPCalculator.tsx          # RESP calculator
 │   ├── DailyInterestCalculator.tsx # Daily interest calculations
 │   ├── CompoundInterestCalculator.tsx # Compound interest with visualizations
 │   ├── LoanAmortizationCalculator.tsx # Loan payment schedules
-│   ├── RESPMultiYearChart.tsx      # Data visualization component
+│   ├── MortgageCalculator.tsx      # Mortgage payment calculator
+│   ├── AssetTracker.tsx            # Asset tracking component
+│   ├── CashflowTracker.tsx         # Cashflow tracking component
 │   ├── NavigationHeader.tsx        # Main navigation
 │   └── __tests__/                  # Component unit tests
+├── hooks/                  # Custom React hooks
+│   ├── useMortgageData.ts         # Mortgage data hook
+│   └── useCashflowData.ts         # Cashflow data hook
+├── lib/                    # Library utilities
+│   └── database.ts                # Database operations
 └── utils/
     ├── financialCalculations.ts    # Core financial formulas
     └── __tests__/                  # Utility function tests

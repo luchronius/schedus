@@ -38,7 +38,8 @@ export async function POST(request: NextRequest) {
       calculationName,
       mortgageStartDate,
       paymentDayOfMonth,
-      preferredPaymentDay
+      preferredPaymentDay,
+      mortgageTermMonths
     } = body;
 
     if (!mortgageAmount || !annualRate || !monthlyPayment) {
@@ -54,7 +55,8 @@ export async function POST(request: NextRequest) {
       calculationName: calculationName || null,
       mortgageStartDate: mortgageStartDate || null,
       paymentDayOfMonth: paymentDayOfMonth ? parseInt(paymentDayOfMonth) : null,
-      preferredPaymentDay: preferredPaymentDay ? parseInt(preferredPaymentDay) : null
+      preferredPaymentDay: preferredPaymentDay ? parseInt(preferredPaymentDay) : null,
+      mortgageTermMonths: mortgageTermMonths ? parseInt(mortgageTermMonths) : null
     };
 
     const calculation = createMortgageCalculation(params);

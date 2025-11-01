@@ -24,6 +24,12 @@ interface Expense {
   isRecurring?: boolean;
 }
 
+interface Todo {
+  id: string;
+  description: string;
+  createdAt: Date;
+}
+
 interface MonthData {
   month: number;
   year: number;
@@ -56,11 +62,39 @@ export default function CashflowTracker() {
     deleteExpense
   } = useCashflowData();
 
-  const [selectedYear, setSelectedYear] = useState<number>(2025);
+  // Initialize selectedYear from localStorage or default to 2025
+  const [selectedYear, setSelectedYear] = useState<number>(() => {
+    if (typeof window !== 'undefined') {
+      const savedYear = localStorage.getItem('cashflowTracker_selectedYear');
+      return savedYear ? parseInt(savedYear) : 2025;
+    }
+    return 2025;
+  });
   const [showAddInvestment, setShowAddInvestment] = useState(false);
   const [showAddExpense, setShowAddExpense] = useState(false);
+  const [showAddTodo, setShowAddTodo] = useState(false);
   const [editingInvestment, setEditingInvestment] = useState<Investment | null>(null);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
+  const [editingTodo, setEditingTodo] = useState<Todo | null>(null);
+  const [convertingTodo, setConvertingTodo] = useState<Todo | null>(null);
+  // Initialize todos from localStorage
+  const [todos, setTodos] = useState<Todo[]>(() => {
+    if (typeof window !== 'undefined') {
+      const savedTodos = localStorage.getItem('cashflowTracker_todos');
+      if (savedTodos) {
+        try {
+          const parsed = JSON.parse(savedTodos);
+          return parsed.map((todo: any) => ({
+            ...todo,
+            createdAt: new Date(todo.createdAt)
+          }));
+        } catch (error) {
+          console.error('Error parsing saved todos:', error);
+        }
+      }
+    }
+    return [];
+  });
   
   // Refs
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -84,9 +118,20 @@ export default function CashflowTracker() {
     isRecurring: false
   });
 
+  const [newTodo, setNewTodo] = useState<Partial<Todo>>({
+    description: ''
+  });
+
   const [operationLoading, setOperationLoading] = useState(false);
 
   const years = [2025, 2026, 2027, 2028, 2029, 2030];
+
+  // Save selectedYear to localStorage when it changes
+  React.useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('cashflowTracker_selectedYear', selectedYear.toString());
+    }
+  }, [selectedYear]);
 
   // Update form defaults when selected year changes
   React.useEffect(() => {
@@ -99,6 +144,13 @@ export default function CashflowTracker() {
       year: selectedYear
     }));
   }, [selectedYear]);
+
+  // Save todos to localStorage when they change
+  React.useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('cashflowTracker_todos', JSON.stringify(todos));
+    }
+  }, [todos]);
 
   // Generate timeline data
   const timelineData = useMemo(() => {
@@ -130,6 +182,7 @@ export default function CashflowTracker() {
           expenses: monthExpenses,
           monthlyTotal: investmentTotal + expenseTotal
         });
+        
       }
     }
     
@@ -153,6 +206,13 @@ export default function CashflowTracker() {
       };
 
       await addInvestment(investment);
+      
+      // If this was converted from a todo, delete the original todo
+      if (convertingTodo) {
+        handleDeleteTodo(convertingTodo.id);
+        setConvertingTodo(null);
+      }
+      
       setNewInvestment({
         type: 'TFSA',
         amount: 0,
@@ -185,6 +245,13 @@ export default function CashflowTracker() {
       };
 
       await addExpense(expense);
+      
+      // If this was converted from a todo, delete the original todo
+      if (convertingTodo) {
+        handleDeleteTodo(convertingTodo.id);
+        setConvertingTodo(null);
+      }
+      
       setNewExpense({
         category: 'Other',
         description: '',
@@ -198,6 +265,77 @@ export default function CashflowTracker() {
     } finally {
       setOperationLoading(false);
     }
+  };
+
+  // Todo management functions
+  const handleAddTodo = () => {
+    if (!newTodo.description?.trim()) {
+      return;
+    }
+
+    const todo: Todo = {
+      id: Date.now().toString(),
+      description: newTodo.description.trim(),
+      createdAt: new Date()
+    };
+
+    setTodos(prev => [...prev, todo]);
+    setNewTodo({ description: '' });
+    setShowAddTodo(false);
+  };
+
+  const handleEditTodo = (todo: Todo) => {
+    setEditingTodo(todo);
+    setNewTodo({
+      description: todo.description
+    });
+    setShowAddTodo(true);
+  };
+
+  const handleUpdateTodo = () => {
+    if (!editingTodo || !newTodo.description?.trim()) {
+      return;
+    }
+
+    setTodos(prev => prev.map(todo => 
+      todo.id === editingTodo.id 
+        ? { ...todo, description: newTodo.description!.trim() }
+        : todo
+    ));
+
+    setEditingTodo(null);
+    setNewTodo({ description: '' });
+    setShowAddTodo(false);
+  };
+
+  const handleDeleteTodo = (todoId: string) => {
+    setTodos(prev => prev.filter(todo => todo.id !== todoId));
+  };
+
+  const convertTodoToExpense = (todo: Todo) => {
+    setConvertingTodo(todo); // Track which todo is being converted
+    setNewExpense({
+      category: 'Other',
+      description: todo.description,
+      amount: 0,
+      month: new Date().getMonth() + 1,
+      year: selectedYear,
+      isRecurring: false
+    });
+    setShowAddExpense(true);
+  };
+
+  const convertTodoToInvestment = (todo: Todo) => {
+    setConvertingTodo(todo); // Track which todo is being converted
+    setNewInvestment({
+      type: 'Other',
+      amount: 0,
+      month: new Date().getMonth() + 1,
+      year: selectedYear,
+      description: todo.description,
+      isRecurring: false
+    });
+    setShowAddInvestment(true);
   };
 
   const handleEditInvestment = (investment: Investment) => {
@@ -294,6 +432,8 @@ export default function CashflowTracker() {
   const handleCancelEdit = () => {
     setEditingInvestment(null);
     setEditingExpense(null);
+    setEditingTodo(null);
+    setConvertingTodo(null); // Clear the converting todo on cancel
     setNewInvestment({
       type: 'TFSA',
       amount: 0,
@@ -310,8 +450,12 @@ export default function CashflowTracker() {
       year: selectedYear,
       isRecurring: false
     });
+    setNewTodo({
+      description: ''
+    });
     setShowAddInvestment(false);
     setShowAddExpense(false);
+    setShowAddTodo(false);
   };
 
   const handleRemoveInvestment = async (id: string) => {
@@ -407,11 +551,15 @@ export default function CashflowTracker() {
       try {
         setOperationLoading(true);
         
-        // Delete all investments and expenses
+        // Delete all investments, expenses, and todos
         const deletePromises = [
           ...investments.map(inv => deleteInvestment(inv.id)),
           ...expenses.map(exp => deleteExpense(exp.id))
         ];
+        
+        // Clear todos locally and from localStorage
+        setTodos([]);
+        localStorage.removeItem('cashflowTracker_todos');
         
         await Promise.all(deletePromises);
       } catch (error) {
@@ -585,6 +733,8 @@ export default function CashflowTracker() {
       ...investments.map(inv => deleteInvestment(inv.id)),
       ...expenses.map(exp => deleteExpense(exp.id))
     ];
+    setTodos([]); // Clear todos locally
+    localStorage.removeItem('cashflowTracker_todos');
     await Promise.all(deletePromises);
   };
 
@@ -682,6 +832,13 @@ export default function CashflowTracker() {
             Add Expense
           </button>
 
+          <button
+            onClick={() => setShowAddTodo(true)}
+            className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 text-sm"
+          >
+            Add To do
+          </button>
+
           {investments.length === 0 && (
             <button
               onClick={getDefaultInvestments}
@@ -744,6 +901,66 @@ export default function CashflowTracker() {
           </div>
         )}
       </div>
+
+      {/* To Do List */}
+      {todos.length > 0 && (
+        <div className="mb-8 bg-white rounded-lg shadow-lg p-6">
+          <h2 className="text-xl font-semibold mb-4 text-purple-700">📝 To Do List</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="border-b border-gray-200">
+                  <th className="text-left py-3 px-4 font-medium text-gray-700">Description</th>
+                  <th className="text-left py-3 px-4 font-medium text-gray-700">Created</th>
+                  <th className="text-right py-3 px-4 font-medium text-gray-700">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {todos.map((todo) => (
+                  <tr key={todo.id} className="border-b border-gray-100 hover:bg-gray-50">
+                    <td className="py-3 px-4 text-gray-900">{todo.description}</td>
+                    <td className="py-3 px-4 text-gray-600 text-sm">
+                      {todo.createdAt.toLocaleDateString()}
+                    </td>
+                    <td className="py-3 px-4">
+                      <div className="flex justify-end gap-2">
+                        <button
+                          onClick={() => handleEditTodo(todo)}
+                          className="text-blue-500 hover:text-blue-700 p-1"
+                          title="Edit todo"
+                        >
+                          ✏️
+                        </button>
+                        <button
+                          onClick={() => convertTodoToExpense(todo)}
+                          className="text-red-500 hover:text-red-700 p-1"
+                          title="Convert to expense"
+                        >
+                          💰
+                        </button>
+                        <button
+                          onClick={() => convertTodoToInvestment(todo)}
+                          className="text-green-500 hover:text-green-700 p-1"
+                          title="Convert to investment"
+                        >
+                          📈
+                        </button>
+                        <button
+                          onClick={() => handleDeleteTodo(todo.id)}
+                          className="text-gray-500 hover:text-gray-700 p-1"
+                          title="Delete todo"
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Timeline View */}
       <div className="mb-8">
@@ -1060,8 +1277,49 @@ export default function CashflowTracker() {
         </div>
       )}
 
+      {/* Add/Edit Todo Modal */}
+      {showAddTodo && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full">
+            <h3 className="text-lg font-semibold mb-4">
+              {editingTodo ? 'Edit To do' : 'Add To do'}
+            </h3>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Description
+                </label>
+                <textarea
+                  value={newTodo.description || ''}
+                  onChange={(e) => setNewTodo({...newTodo, description: e.target.value})}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  placeholder="What do you need to do?"
+                  rows={3}
+                />
+              </div>
+            </div>
+            
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={editingTodo ? handleUpdateTodo : handleAddTodo}
+                className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700"
+              >
+                {editingTodo ? 'Update' : 'Add'}
+              </button>
+              <button
+                onClick={handleCancelEdit}
+                className="px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Total Cash Outflow Summary */}
-      {(investments.length > 0 || expenses.length > 0) && (
+      {(investments.length > 0 || expenses.length > 0 || todos.length > 0) && (
         <div className="mt-8 bg-white rounded-lg shadow-lg p-6">
           <div className="flex justify-between items-center">
             <span className="font-bold text-xl">Total Cash Outflow</span>

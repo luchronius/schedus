@@ -13,7 +13,16 @@ export interface MortgageData {
   mortgageStartDate?: string;
   paymentDayOfMonth?: number;
   preferredPaymentDay?: number;
+  mortgageTermMonths?: number;
   lumpSumPayments: LumpSumPaymentData[];
+  rateAdjustments: RateAdjustmentData[];
+}
+
+export interface RateAdjustmentData {
+  id?: number;
+  effectiveDate: string;
+  rateDelta: number;
+  description?: string;
 }
 
 export interface LumpSumPaymentData {
@@ -62,9 +71,13 @@ export function useMortgageData() {
           const lumpSumResponse = await fetch(`/api/lump-sum-payments?calculationId=${calc.id}`);
           const lumpSums = lumpSumResponse.ok ? await lumpSumResponse.json() : [];
           
+          const adjustmentsResponse = await fetch(`/api/rate-adjustments?calculationId=${calc.id}`);
+          const rateAdjustments = adjustmentsResponse.ok ? await adjustmentsResponse.json() : [];
+
           return {
             ...calc,
-            lumpSumPayments: lumpSums
+            lumpSumPayments: lumpSums,
+            rateAdjustments
           };
         })
       );
@@ -100,7 +113,8 @@ export function useMortgageData() {
           calculationName: data.calculationName,
           mortgageStartDate: data.mortgageStartDate,
           paymentDayOfMonth: data.paymentDayOfMonth,
-          preferredPaymentDay: data.preferredPaymentDay
+          preferredPaymentDay: data.preferredPaymentDay,
+          mortgageTermMonths: data.mortgageTermMonths
         })
       });
 
@@ -128,6 +142,24 @@ export function useMortgageData() {
                 actualPaidDate: lumpSum.actualPaidDate,
                 interestSaved: lumpSum.interestSaved,
                 timeSaved: lumpSum.timeSaved
+              })
+            })
+          )
+        );
+      }
+
+      // Save rate adjustments
+      if (data.rateAdjustments && data.rateAdjustments.length > 0) {
+        await Promise.all(
+          data.rateAdjustments.map((adjustment) =>
+            fetch('/api/rate-adjustments', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                mortgageCalculationId: savedCalculation.id,
+                effectiveDate: adjustment.effectiveDate,
+                rateDelta: typeof adjustment.rateDelta === 'number' ? adjustment.rateDelta : Number(adjustment.rateDelta) || 0,
+                description: adjustment.description
               })
             })
           )
@@ -183,6 +215,75 @@ export function useMortgageData() {
     });
   };
 
+  const addRateAdjustment = async (
+    calculationId: number,
+    adjustment: RateAdjustmentData
+  ): Promise<boolean> => {
+    if (!session?.user?.id) return false;
+
+    try {
+      const response = await fetch('/api/rate-adjustments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mortgageCalculationId: calculationId,
+          effectiveDate: adjustment.effectiveDate,
+          rateDelta: adjustment.rateDelta,
+          description: adjustment.description
+        })
+      });
+
+      if (response.ok) {
+        await loadCalculations();
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error('Error adding rate adjustment:', error);
+      return false;
+    }
+  };
+
+  const updateRateAdjustment = async (
+    adjustmentId: number,
+    updates: Partial<RateAdjustmentData>
+  ): Promise<boolean> => {
+    if (!session?.user?.id) return false;
+
+    try {
+      const response = await fetch(`/api/rate-adjustments?id=${adjustmentId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      });
+
+      if (response.ok) {
+        await loadCalculations();
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error('Error updating rate adjustment:', error);
+      return false;
+    }
+  };
+
+  const deleteRateAdjustment = async (adjustmentId: number): Promise<boolean> => {
+    if (!session?.user?.id) return false;
+
+    try {
+      const response = await fetch(`/api/rate-adjustments?id=${adjustmentId}`, { method: 'DELETE' });
+      if (response.ok) {
+        await loadCalculations();
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error('Error deleting rate adjustment:', error);
+      return false;
+    }
+  };
+
   const deleteCalculation = async (calculationId: number): Promise<boolean> => {
     if (!session?.user?.id) {
       setError('Please sign in to delete calculations');
@@ -223,6 +324,9 @@ export function useMortgageData() {
     saveCalculation,
     updateLumpSumPayment,
     markLumpSumAsPaid,
+    addRateAdjustment,
+    updateRateAdjustment,
+    deleteRateAdjustment,
     deleteCalculation
   };
 }

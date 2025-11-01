@@ -11,8 +11,9 @@ interface MortgageTimelineVisualizationProps {
 interface TimelineEvent {
   date: Date;
   balance: number;
+  interestRate: number;
   event?: {
-    type: 'payment' | 'lump_sum';
+    type: 'payment' | 'lump_sum' | 'rate_change';
     amount: number;
     description?: string;
   };
@@ -31,8 +32,9 @@ export default function MortgageTimelineVisualization({
     const events: TimelineEvent[] = history.map((point) => ({
       date: new Date(point.date),
       balance: point.balance,
+      interestRate: point.interestRate,
       event: point.event,
-      isSignificant: point.event?.type === 'lump_sum' || false
+      isSignificant: !!point.event && (point.event.type === 'lump_sum' || point.event.type === 'rate_change')
     })).sort((a, b) => a.date.getTime() - b.date.getTime());
 
     return events;
@@ -176,47 +178,62 @@ export default function MortgageTimelineVisualization({
               return (
                 <g key={index}>
                   {/* Lump sum payment marker */}
-                  <circle 
-                    cx={x} 
-                    cy={y} 
-                    r="6" 
-                    fill="#dc2626" 
-                    stroke="#fff" 
+                  <circle
+                    cx={x}
+                    cy={y}
+                    r="6"
+                    fill="#dc2626"
+                    stroke="#fff"
                     strokeWidth="2"
                   />
                   {/* Drop line to show impact */}
-                  <line 
-                    x1={x} 
-                    y1={y - 20} 
-                    x2={x} 
-                    y2={y + 20} 
-                    stroke="#dc2626" 
+                  <line
+                    x1={x}
+                    y1={y - 20}
+                    x2={x}
+                    y2={y + 20}
+                    stroke="#dc2626"
                     strokeWidth="2"
                     strokeDasharray="4,4"
                     opacity="0.7"
                   />
                 </g>
               );
+            } else if (event.event?.type === 'rate_change') {
+              return (
+                <g key={index}>
+                  <rect
+                    x={x - 5}
+                    y={y - 5}
+                    width={10}
+                    height={10}
+                    fill="#8b5cf6"
+                    stroke="#fff"
+                    strokeWidth={2}
+                    transform={`rotate(45, ${x}, ${y})`}
+                  />
+                </g>
+              );
             } else if (event.isSignificant) {
               return (
-                <circle 
+                <circle
                   key={index}
-                  cx={x} 
-                  cy={y} 
-                  r="4" 
-                  fill="#10b981" 
-                  stroke="#fff" 
+                  cx={x}
+                  cy={y}
+                  r="4"
+                  fill="#10b981"
+                  stroke="#fff"
                   strokeWidth="2"
                 />
               );
             } else {
               return (
-                <circle 
+                <circle
                   key={index}
-                  cx={x} 
-                  cy={y} 
-                  r="2" 
-                  fill="#3b82f6" 
+                  cx={x}
+                  cy={y}
+                  r="2"
+                  fill="#3b82f6"
                   opacity="0.6"
                 />
               );
@@ -266,7 +283,7 @@ export default function MortgageTimelineVisualization({
 
       {/* Legend and Summary Stats */}
       <div className="mt-6 flex flex-wrap items-center justify-between">
-        <div className="flex items-center space-x-6 mb-4">
+        <div className="flex items-center space-x-6 mb-4 flex-wrap gap-4">
           <div className="flex items-center">
             <div className="w-4 h-0.5 bg-blue-500 mr-2"></div>
             <span className="text-sm text-gray-600">Balance Trend</span>
@@ -276,63 +293,89 @@ export default function MortgageTimelineVisualization({
             <span className="text-sm text-gray-600">Lump Sum Payments</span>
           </div>
           <div className="flex items-center">
+            <div className="w-3 h-3 bg-purple-500 mr-2 transform rotate-45"></div>
+            <span className="text-sm text-gray-600">Rate Changes</span>
+          </div>
+          <div className="flex items-center">
             <div className="w-3 h-3 bg-green-500 rounded-full mr-2"></div>
-            <span className="text-sm text-gray-600">Significant Events</span>
+            <span className="text-sm text-gray-600">Other Highlights</span>
           </div>
         </div>
-        
+
         <div className="flex flex-wrap gap-4 text-sm text-gray-600">
           <div>
-            <span className="font-medium">Balance Reduction:</span> 
-            ${((timelineEvents[0]?.balance || 0) - (timelineEvents[timelineEvents.length - 1]?.balance || 0)).toLocaleString()}
+            <span className="font-medium">Balance Reduction:</span>{' '}
+            {((timelineEvents[0]?.balance ?? 0) - (timelineEvents[timelineEvents.length - 1]?.balance ?? 0)).toLocaleString()}
           </div>
           <div>
-            <span className="font-medium">Lump Sum Payments:</span> 
+            <span className="font-medium">Lump Sum Payments:</span>{' '}
             {timelineEvents.filter(e => e.event?.type === 'lump_sum').length}
           </div>
           <div>
-            <span className="font-medium">Time Span:</span> 
-            {timelineEvents.length > 1 ? 
-              `${Math.round((timelineEvents[timelineEvents.length - 1].date.getTime() - timelineEvents[0].date.getTime()) / (1000 * 60 * 60 * 24 * 30))} months` : 
-              'N/A'
-            }
+            <span className="font-medium">Rate Changes:</span>{' '}
+            {timelineEvents.filter(e => e.event?.type === 'rate_change').length}
+          </div>
+          <div>
+            <span className="font-medium">Time Span:</span>{' '}
+            {timelineEvents.length > 1
+              ? `${Math.round((timelineEvents[timelineEvents.length - 1].date.getTime() - timelineEvents[0].date.getTime()) / (1000 * 60 * 60 * 24 * 30))} months`
+              : 'N/A'}
           </div>
         </div>
       </div>
-
       {/* Recent significant events */}
       <div className="mt-6">
         <h4 className="text-lg font-medium text-gray-900 mb-3">Recent Significant Events</h4>
         <div className="space-y-2">
-          {timelineEvents
-            .filter(event => event.event?.type === 'lump_sum')
-            .slice(-5)
-            .reverse()
-            .map((event, index) => (
-            <div key={index} className="flex items-center justify-between p-2 bg-gray-50 rounded">
-              <div>
-                <span className="font-medium text-gray-900">
-                  {event.date.toLocaleDateString()}
-                </span>
-                {event.event?.description && (
-                  <span className="ml-2 text-sm text-gray-600">
-                    - {event.event.description}
-                  </span>
-                )}
-              </div>
-              <div className="text-right">
-                <div className="font-medium text-red-600">
-                  -${event.event?.amount.toLocaleString()}
+          {(() => {
+            const recentEvents = timelineEvents
+              .filter(event => event.event && (event.event.type === 'lump_sum' || event.event.type === 'rate_change'))
+              .slice(-5)
+              .reverse();
+
+            if (recentEvents.length === 0) {
+              return <p className="text-gray-500 text-sm">No lump sum payments or rate changes recorded yet.</p>;
+            }
+
+            return recentEvents.map((event, index) => {
+              const isRateChange = event.event?.type === 'rate_change';
+              const amount = Number(event.event?.amount ?? 0);
+
+              return (
+                <div key={index} className="flex items-center justify-between p-2 bg-gray-50 rounded">
+                  <div>
+                    <span className="font-medium text-gray-900">
+                      {event.date.toLocaleDateString()}
+                    </span>
+                    {event.event?.description && (
+                      <span className="ml-2 text-sm text-gray-600">
+                        - {event.event.description}
+                      </span>
+                    )}
+                    {isRateChange && (
+                      <span className="ml-2 text-xs text-purple-600">
+                        {amount >= 0 ? '+' : '-'}{Math.abs(amount).toFixed(2)}%
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-right">
+                    {isRateChange ? (
+                      <div className="font-medium text-purple-600">
+                        Current rate: {event.interestRate.toFixed(2)}%
+                      </div>
+                    ) : (
+                      <div className="font-medium text-red-600">
+                        -${amount.toLocaleString()}
+                      </div>
+                    )}
+                    <div className="text-xs text-gray-500">
+                      Balance: ${event.balance.toLocaleString()}
+                    </div>
+                  </div>
                 </div>
-                <div className="text-xs text-gray-500">
-                  Balance: ${event.balance.toLocaleString()}
-                </div>
-              </div>
-            </div>
-          ))}
-          {timelineEvents.filter(e => e.event?.type === 'lump_sum').length === 0 && (
-            <p className="text-gray-500 text-sm">No lump sum payments recorded yet.</p>
-          )}
+              );
+            });
+          })()}
         </div>
       </div>
     </div>

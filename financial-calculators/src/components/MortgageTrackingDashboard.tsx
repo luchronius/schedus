@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useSession } from 'next-auth/react';
 import { useMortgageData } from '@/hooks/useMortgageData';
 import DeleteConfirmModal from '@/components/DeleteConfirmModal';
+import { monthsToTermParts } from '@/utils/mortgageTerm';
 
 interface MortgageTrackingDashboardProps {
   calculationId?: number;
@@ -26,6 +27,22 @@ export default function MortgageTrackingDashboard({ calculationId: propCalculati
       setSelectedCalculationId(mortgageCalculations[0].id);
     }
   }, [mortgageCalculations, selectedCalculationId]);
+
+  const formatTermLabel = (totalMonths?: number | null) => {
+    if (!totalMonths || totalMonths <= 0) {
+      return 'Not set';
+    }
+    const parts = monthsToTermParts(totalMonths);
+    const partsList: string[] = [];
+    if (parts.years) {
+      partsList.push(`${parts.years} ${parts.years === 1 ? 'year' : 'years'}`);
+    }
+    if (parts.months) {
+      partsList.push(`${parts.months} ${parts.months === 1 ? 'month' : 'months'}`);
+    }
+    return partsList.join(', ') || 'Not set';
+  };
+
 
   if (!session) {
     return (
@@ -119,6 +136,10 @@ export default function MortgageTrackingDashboard({ calculationId: propCalculati
                   <div>
                     <p className="text-sm text-gray-600">Extra Payment</p>
                     <p className="text-lg font-semibold">${selectedCalc.extraMonthlyPayment.toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-600">Original Term</p>
+                    <p className="text-lg font-semibold">{formatTermLabel(selectedCalc.mortgageTermMonths)}</p>
                   </div>
                 </div>
               </div>
